@@ -6,9 +6,10 @@ interface ChatMessageProps {
   content: string;
   role: string;
   timestamp: Date;
+  isTyping?: boolean;
 }
 
-export function ChatMessage({ content, role, timestamp }: ChatMessageProps) {
+export function ChatMessage({ content, role, timestamp, isTyping }: ChatMessageProps) {
   const components: Components = {
     code({ className, children, node, ...props }) {
       const isInline = node?.position?.start.line === node?.position?.end.line;
@@ -26,16 +27,18 @@ export function ChatMessage({ content, role, timestamp }: ChatMessageProps) {
   return (
     <div className={`chat-message ${role}`}>
       <div className="message-content">
-        <div className="message-bubble">
-          {role === 'assistant' ? (
-            <ReactMarkdown 
-              remarkPlugins={[remarkGfm]}
-              components={components}
-            >
-              {content}
-            </ReactMarkdown>
-          ) : (
-            content
+        <div className={`message-bubble ${isTyping ? 'typing' : ''}`}>
+          {isTyping ? null : (
+            role === 'assistant' ? (
+              <ReactMarkdown 
+                remarkPlugins={[remarkGfm]}
+                components={components}
+              >
+                {content}
+              </ReactMarkdown>
+            ) : (
+              content
+            )
           )}
         </div>
         <div className="message-timestamp">
