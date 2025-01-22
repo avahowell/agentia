@@ -5,11 +5,14 @@ import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
 import { ToolSidebar } from './components/ToolSidebar';
 import { SettingsView } from './components/SettingsView';
+import { ToolsView } from './components/ToolsView';
 import { Chat, Message, createChat, addMessage, getChats, getMessages, updateChatTitle } from './services/chat';
 import { streamAssistantResponse, clearChatContext, initializeChatContext, getSummaryTitle } from './services/ai';
 
 function App() {
   const [chats, setChats] = useState<Chat[]>([]);
+  const [messageCache, setMessageCache] = useState<Record<string, Message[]>>({});
+  const MAX_CACHED_CHATS = 20; // Only keep messages for the 20 most recent chats
   const [isDark, setIsDark] = useState(() => {
     const savedTheme = localStorage.getItem('theme');
     return savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -20,18 +23,28 @@ function App() {
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false);
   const [hasOpenAiKey, setHasOpenAiKey] = useState(false);
 
-  // Load chats on mount
+  // Load chats and their messages on mount
   useEffect(() => {
-    const loadChats = async () => {
+    const loadChatsAndMessages = async () => {
       try {
         const loadedChats = await getChats();
         setChats(loadedChats);
+
+        // Load messages for the 10 most recent chats
+        const recentChats = loadedChats.slice(0, 10);
+        const messagesPromises = recentChats.map(chat => 
+          getMessages(chat.id).then(messages => [chat.id, messages] as const)
+        );
+        
+        const messagesResults = await Promise.all(messagesPromises);
+        const newMessageCache = Object.fromEntries(messagesResults);
+        setMessageCache(newMessageCache);
       } catch (error) {
-        console.error('Failed to load chats:', error);
+        console.error('Failed to load chats and messages:', error);
       }
     };
     
-    loadChats();
+    loadChatsAndMessages();
   }, []);
 
   // Check for API keys on mount
@@ -54,8 +67,47 @@ function App() {
     localStorage.setItem('theme', isDark ? 'dark' : 'light');
   }, [isDark]);
 
+  // Add effect to clean up message cache when chats change
+  useEffect(() => {
+    if (Object.keys(messageCache).length > MAX_CACHED_CHATS) {
+      // Get the most recent chat IDs
+      const recentChatIds = chats.slice(0, MAX_CACHED_CHATS).map(chat => chat.id);
+      
+      // Create new cache with only recent chats
+      const newCache: Record<string, Message[]> = {};
+      recentChatIds.forEach(id => {
+        if (messageCache[id]) {
+          newCache[id] = messageCache[id];
+        }
+      });
+      
+      setMessageCache(newCache);
+    }
+  }, [chats, messageCache]);
+
   const handleSelectChat = async (id: string) => {
     setCurrentChatId(id);
+    
+    // Load messages if not in cache
+    if (!messageCache[id]) {
+      try {
+        const messages = await getMessages(id);
+        setMessageCache(prev => {
+          const newCache = { ...prev, [id]: messages };
+          // If cache is too large, remove oldest entries
+          const cacheIds = Object.keys(newCache);
+          if (cacheIds.length > MAX_CACHED_CHATS) {
+            const recentChatIds = chats.slice(0, MAX_CACHED_CHATS).map(chat => chat.id);
+            return Object.fromEntries(
+              Object.entries(newCache).filter(([id]) => recentChatIds.includes(id))
+            );
+          }
+          return newCache;
+        });
+      } catch (error) {
+        console.error('Failed to load messages:', error);
+      }
+    }
   };
 
   const handleNewChat = async () => {
@@ -63,6 +115,7 @@ function App() {
       const newChat = await createChat('New Chat');
       setChats(prev => [newChat, ...prev]);
       setCurrentChatId(newChat.id);
+      setMessageCache(prev => ({ ...prev, [newChat.id]: [] }));
     } catch (error) {
       console.error('Failed to create new chat:', error);
     }
@@ -86,6 +139,11 @@ function App() {
   const renderMainView = () => {
     switch (selectedTool) {
       case 'chat':
+        const WINDOW_SIZE = 3; // Keep 3 chats rendered at a time
+        const currentIndex = chats.findIndex(chat => chat.id === currentChatId);
+        const start = Math.max(0, currentIndex - Math.floor(WINDOW_SIZE / 2));
+        const visibleChats = chats.slice(start, start + WINDOW_SIZE);
+        
         return (
           <>
             <Sidebar
@@ -94,27 +152,39 @@ function App() {
               onSelectChat={handleSelectChat}
               selectedChatId={currentChatId ?? undefined}
             />
-            <ChatView
-              currentChatId={currentChatId}
-              onChatCreated={(chat) => {
-                setChats(prev => [chat, ...prev]);
-                setCurrentChatId(chat.id);
-              }}
-              onChatTitleUpdated={(chatId, title) => {
-                setChats(prev => prev.map(chat =>
-                  chat.id === chatId ? { ...chat, title } : chat
-                ));
-              }}
-            />
+            <div className="chat-views-container">
+              {visibleChats.map(chat => (
+                <div 
+                  key={chat.id}
+                  style={{ 
+                    display: currentChatId === chat.id ? 'flex' : 'none',
+                    width: '100%',
+                    height: '100%'
+                  }}
+                >
+                  <ChatView
+                    currentChatId={chat.id}
+                    initialMessages={messageCache[chat.id]}
+                    onChatCreated={(chat) => {
+                      setChats(prev => [chat, ...prev]);
+                      setCurrentChatId(chat.id);
+                    }}
+                    onChatTitleUpdated={(chatId, title) => {
+                      setChats(prev => prev.map(c =>
+                        c.id === chatId ? { ...c, title } : c
+                      ));
+                    }}
+                    onMessagesUpdated={(chatId, messages) => {
+                      setMessageCache(prev => ({ ...prev, [chatId]: messages }));
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
           </>
         );
       case 'tools':
-        return (
-          <div className="tools-view">
-            <h2>Tool Configuration</h2>
-            {/* Tool configuration UI will go here */}
-          </div>
-        );
+        return <ToolsView />;
       case 'settings':
         return (
           <SettingsView 
