@@ -1,5 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
 
+export interface FileAttachment {
+  name: string;
+  type: string;
+  content: string; // Base64 encoded content
+  size: number;
+}
+
 export interface Chat {
   id: string;
   title: string;
@@ -13,6 +20,7 @@ export interface Message {
   content: string;
   role: string;
   created_at: string;
+  attachments?: FileAttachment[];
 }
 
 export async function createChat(title: string): Promise<Chat> {
@@ -22,12 +30,40 @@ export async function createChat(title: string): Promise<Chat> {
 export async function addMessage(
   chatId: string,
   content: string,
-  role: string
+  role: string,
+  files?: File[] | { content: string; type: string; name?: string; size?: number }[]
 ): Promise<Message> {
+  let attachments: FileAttachment[] | undefined;
+  
+  if (files && files.length > 0) {
+    attachments = await Promise.all(files.map(async (file) => {
+      if ('content' in file) {
+        // Handle pre-processed attachment
+        return {
+          name: file.name || 'attachment',
+          type: file.type,
+          content: file.content,
+          size: file.size || file.content.length * 0.75 // Estimate size from base64 length
+        };
+      } else {
+        // Handle File object
+        const buffer = await file.arrayBuffer();
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+        return {
+          name: file.name,
+          type: file.type,
+          content: base64,
+          size: file.size
+        };
+      }
+    }));
+  }
+
   return invoke('add_message', {
     chatId,
     content,
     role,
+    attachments
   });
 }
 

@@ -3,7 +3,8 @@ import React, {
     useRef,
     useEffect,
     useLayoutEffect,
-    useCallback
+    useCallback,
+    useMemo
 } from 'react';
 import {
     Message,
@@ -14,13 +15,24 @@ import {
     updateChatTitle
 } from '../services/chat';
 import { ChatMessage } from './ChatMessage';
-import { ChatInput } from './ChatInput';
+import { ChatInput, ChatInputHandle } from './ChatInput';
 import { ErrorMessage } from './ErrorMessage';
 import {
     streamAssistantResponse,
     getSummaryTitle,
     initializeChatContext
 } from '../services/ai';
+import { Window, getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from '@tauri-apps/api/core';
+import type { Event } from '@tauri-apps/api/event';
+import { open } from '@tauri-apps/plugin-fs';
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+
+type FileDropPayload = {
+    type: 'over' | 'drop' | 'cancel';
+    paths: string[];
+    position?: { x: number; y: number };
+};
 
 interface ChatViewProps {
     currentChatId: string | null;
@@ -135,6 +147,9 @@ export function ChatView({
     // Temporary error messages
     const [errors, setErrors] = useState<ErrorItem[]>([]);
 
+    const [isDragging, setIsDragging] = useState(false);
+    const dragCounter = useRef(0);
+
     const scrollToBottom = () => {
         if (!userHasScrolled.current) {
             messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -201,31 +216,95 @@ export function ChatView({
     // -------------------------------------------------------------------------
     // 2) Sending user messages
     // -------------------------------------------------------------------------
-    const handleSendMessage = async (content: string) => {
+    // Memoize handleAssistantResponse
+    const handleAssistantResponse = useCallback(async (chatId: string, userMessage: string, attachments?: { content: string; type: string }[]) => {
+        setIsStreaming(true);
+        setIsWaitingForFirstToken(true);
+
+        let assistantMessage = '';
+        const messageId = crypto.randomUUID();
+        let isFirstToken = true;
+
+        try {
+            // Read tokens
+            for await (const chunk of streamAssistantResponse(chatId, userMessage, attachments)) {
+                assistantMessage += chunk;
+                
+                if (isFirstToken) {
+                    // First token - create the message
+                    setIsWaitingForFirstToken(false);
+                    isFirstToken = false;
+                    setMessages(prev => [...prev, {
+                        id: messageId,
+                        chat_id: chatId,
+                        content: assistantMessage,
+                        role: 'assistant',
+                        created_at: new Date().toISOString(),
+                        attachments: undefined
+                    }]);
+                } else {
+                    // Update existing message
+                    setMessages(prev => {
+                        const newMessages = [...prev];
+                        const lastMessage = newMessages[newMessages.length - 1];
+                        if (lastMessage.id === messageId) {
+                            lastMessage.content = assistantMessage;
+                        }
+                        return newMessages;
+                    });
+                }
+            }
+
+            // Save the final message to the database
+            const finalMsg = await addMessage(chatId, assistantMessage, 'assistant');
+            
+            // Replace our temporary message with the saved one
+            setMessages(prev => {
+                const newMessages = [...prev];
+                const lastIdx = newMessages.length - 1;
+                if (newMessages[lastIdx].id === messageId) {
+                    newMessages[lastIdx] = finalMsg;
+                }
+                onMessagesUpdated(chatId, newMessages);
+                return newMessages;
+            });
+        } finally {
+            setIsStreaming(false);
+            setIsWaitingForFirstToken(false);
+        }
+    }, [onMessagesUpdated]);
+
+    // Memoize handleSendMessage
+    const handleSendMessage = useCallback(async (content: string, attachments?: { content: string; type: string }[]) => {
         try {
             if (!currentChatId) {
                 // Create a new chat
+                console.log('Creating new chat...');
                 const newChat = await createChat('...');
                 onChatCreated(newChat);
 
                 // Insert user message from server
-                const userMsg = await addMessage(newChat.id, content, 'user');
+                console.log('Adding user message to new chat...');
+                const userMsg = await addMessage(newChat.id, content, 'user', attachments);
                 setMessages((prev) => {
                     const updated = [...prev, userMsg];
                     onMessagesUpdated(newChat.id, updated);
                     return updated;
                 });
 
-                await handleAssistantResponse(newChat.id, content);
+                console.log('Getting assistant response...');
+                await handleAssistantResponse(newChat.id, content, attachments);
 
                 // Title
+                console.log('Updating chat title...');
                 const title = await getSummaryTitle(content);
                 await updateChatTitle(newChat.id, title);
                 onChatTitleUpdated(newChat.id, title);
 
             } else {
                 // Existing chat
-                const userMsg = await addMessage(currentChatId, content, 'user');
+                console.log('Adding message to existing chat:', currentChatId);
+                const userMsg = await addMessage(currentChatId, content, 'user', attachments);
                 setMessages((prev) => {
                     const updated = [...prev, userMsg];
                     onMessagesUpdated(currentChatId, updated);
@@ -235,14 +314,18 @@ export function ChatView({
                 // If first user message, set title
                 const userCountBefore = messages.filter((m) => m.role === 'user').length;
                 if (userCountBefore === 0) {
+                    console.log('Setting initial chat title...');
                     const title = await getSummaryTitle(content);
                     await updateChatTitle(currentChatId, title);
                     onChatTitleUpdated(currentChatId, title);
                 }
 
-                await handleAssistantResponse(currentChatId, content);
+                console.log('Getting assistant response...');
+                await handleAssistantResponse(currentChatId, content, attachments);
             }
-        } catch (error) {
+        } catch (error: unknown) {
+            console.error('Error in handleSendMessage:', error);
+            console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace available');
             setIsStreaming(false);
             const errorMessage =
                 error instanceof Error ? error.message : 'An error occurred';
@@ -252,100 +335,123 @@ export function ChatView({
                 setErrors((prev) => prev.filter((e) => e.id !== errorId));
             }, 5000);
         }
-    };
-
-    // -------------------------------------------------------------------------
-    // 5) Streaming the assistant's response token by token
-    // -------------------------------------------------------------------------
-    const handleAssistantResponse = async (chatId: string, userMessage: string) => {
-        setIsStreaming(true);
-        setIsWaitingForFirstToken(true);
-
-        let assistantMessage = '';
-        const tempId = crypto.randomUUID();
-        let placeholderInserted = false;
-
-        // Read tokens
-        for await (const chunk of streamAssistantResponse(chatId, userMessage)) {
-            setIsWaitingForFirstToken(false);
-            assistantMessage += chunk;
-
-            if (!placeholderInserted) {
-                // Insert a placeholder message on the first chunk
-                placeholderInserted = true;
-                setMessages((prev) => {
-                    const placeholder: Message = {
-                        id: tempId,
-                        chat_id: chatId,
-                        content: assistantMessage,
-                        role: 'assistant',
-                        created_at: new Date().toISOString()
-                    };
-                    return [...prev, placeholder];
-                });
-            } else {
-                // Update existing placeholder
-                setMessages((prev) => {
-                    const idx = prev.findIndex((m) => m.id === tempId);
-                    if (idx < 0) return prev;
-                    const updatedMsg = { ...prev[idx], content: assistantMessage };
-                    const newList = [...prev];
-                    newList[idx] = updatedMsg;
-                    return newList;
-                });
-            }
-        }
-
-        setIsStreaming(false);
-
-        // Save the final assistant message once
-        const finalMsg = await addMessage(chatId, assistantMessage, 'assistant');
-
-        // Replace the placeholder
-        setMessages((prev) => {
-            const idx = prev.findIndex((m) => m.id === tempId);
-            if (idx < 0) {
-                // If lost placeholder, just append
-                const newList = [...prev, finalMsg];
-                onMessagesUpdated(chatId, newList);
-                return newList;
-            }
-            const newList = [
-                ...prev.slice(0, idx),
-                finalMsg,
-                ...prev.slice(idx + 1)
-            ];
-            onMessagesUpdated(chatId, newList);
-            return newList;
-        });
-    };
+    }, [currentChatId, messages, handleAssistantResponse, onChatCreated, onChatTitleUpdated, onMessagesUpdated]);
 
     // -------------------------------------------------------------------------
     // 6) Dismiss errors
     // -------------------------------------------------------------------------
-    const handleDismissError = (errorId: string) => {
+    const handleDismissError = useCallback((errorId: string) => {
         setErrors((prev) => prev.filter((e) => e.id !== errorId));
-    };
+    }, []);
+
+    // Memoize the message list to prevent unnecessary re-renders
+    const messageList = useMemo(() => {
+        return messages.map((message) => (
+            <ChatMessage
+                key={message.id}
+                content={message.content}
+                role={message.role}
+                timestamp={new Date(message.created_at)}
+                isTyping={false}
+                attachments={message.attachments}
+            />
+        ));
+    }, [messages]);
+
+    // Memoize the error list
+    const errorList = useMemo(() => {
+        return errors.map((error) => (
+            <ErrorMessage
+                key={error.id}
+                message={error.message}
+                onDismiss={() => handleDismissError(error.id)}
+            />
+        ));
+    }, [errors, handleDismissError]);
+
+    // Use useEffect to bind drag events
+    useEffect(() => {
+        const mainContent = document.querySelector('.main-content');
+        if (!mainContent) return;
+
+        const handleDragOver = (e: DragEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.dataTransfer?.types.includes('Files')) {
+                e.dataTransfer.dropEffect = 'copy';
+            }
+        };
+
+        const handleDragEnter = (e: DragEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            if (e.dataTransfer?.types.includes('Files')) {
+                dragCounter.current += 1;
+                if (dragCounter.current === 1) {
+                    setIsDragging(true);
+                }
+            }
+        };
+
+        const handleDragLeave = (e: DragEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            if (e.dataTransfer?.types.includes('Files')) {
+                dragCounter.current -= 1;
+                if (dragCounter.current === 0) {
+                    setIsDragging(false);
+                }
+            }
+        };
+
+        const handleDropEvent = (e: DragEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dragCounter.current = 0;
+            setIsDragging(false);
+
+            if (e.dataTransfer?.files) {
+                const files = Array.from(e.dataTransfer.files);
+                const validImageFiles = files.filter(file => 
+                    file.type.startsWith('image/') && 
+                    ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type)
+                );
+
+                if (validImageFiles.length > 0 && chatInputRef.current) {
+                    chatInputRef.current.addFiles(validImageFiles).catch(console.error);
+                }
+            }
+        };
+
+        mainContent.addEventListener('dragover', handleDragOver as EventListener);
+        mainContent.addEventListener('dragenter', handleDragEnter as EventListener);
+        mainContent.addEventListener('dragleave', handleDragLeave as EventListener);
+        mainContent.addEventListener('drop', handleDropEvent as EventListener);
+
+        return () => {
+            mainContent.removeEventListener('dragover', handleDragOver as EventListener);
+            mainContent.removeEventListener('dragenter', handleDragEnter as EventListener);
+            mainContent.removeEventListener('dragleave', handleDragLeave as EventListener);
+            mainContent.removeEventListener('drop', handleDropEvent as EventListener);
+        };
+    }, []);
+
+    // Add ref for ChatInput
+    const chatInputRef = useRef<ChatInputHandle>(null);
 
     // -------------------------------------------------------------------------
     // Render
     // -------------------------------------------------------------------------
     return (
-        <div className="main-content">
-            <div className="chat-window" ref={chatWindowRef}>
+        <div className="main-content flex flex-col h-full">
+            <div className="chat-window flex-1 relative" ref={chatWindowRef}>
                 {messages.length === 0 ? (
                     <div className="welcome-message">Hi, how can I help you?</div>
                 ) : (
                     <>
-                        {messages.map((message) => (
-                            <ChatMessage
-                                key={message.id}
-                                content={message.content}
-                                role={message.role}
-                                timestamp={new Date(message.created_at)}
-                                isTyping={false}
-                            />
-                        ))}
+                        {messageList}
                         {isWaitingForFirstToken && (
                             <ChatMessage
                                 content=""
@@ -359,17 +465,31 @@ export function ChatView({
                 )}
 
                 <div className="error-container">
-                    {errors.map((error) => (
-                        <ErrorMessage
-                            key={error.id}
-                            message={error.message}
-                            onDismiss={() => handleDismissError(error.id)}
-                        />
-                    ))}
+                    {errorList}
                 </div>
+
+                {/* Drag overlay */}
+                {isDragging && (
+                    <div className="drag-overlay">
+                        <div className="drag-overlay-content">
+                            <svg className="w-12 h-12 text-blue-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                            </svg>
+                            <div className="text-xl font-medium text-blue-600 dark:text-blue-400 mb-2">
+                                Drop image to send
+                            </div>
+                            <div className="text-sm text-blue-500 dark:text-blue-300">
+                                Supported formats: JPEG, PNG, GIF, WebP
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
 
-            <ChatInput onSendMessage={handleSendMessage} />
+            <ChatInput 
+                ref={chatInputRef}
+                onSendMessage={handleSendMessage} 
+            />
         </div>
     );
 }

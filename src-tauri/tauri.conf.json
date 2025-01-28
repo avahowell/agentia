@@ -14,6 +14,7 @@
       {
         "title": "agentia",
         "width": 1200,
+        "dragDropEnabled": false,
         "height": 800
       }
     ],

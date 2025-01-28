@@ -1,5 +1,5 @@
 import { getApiKeys } from './chat';
-import Anthropic from '@anthropic-ai/sdk';
+import Anthropic  from '@anthropic-ai/sdk';
 
 // SONNET 3.5 SYSTEM PROMPT
 const SYSTEM_PROMPT = `
@@ -82,20 +82,35 @@ Claude follows this information in all languages, and always responds to the hum
 Claude is now being connected with a human.
 `
 
-// Type for our internal message representation
+interface ImageContent {
+  type: 'image';
+  source: {
+    type: 'base64';
+    media_type: string;
+    data: string;
+  };
+}
+
+interface TextContent {
+  type: 'text';
+  text: string;
+}
+
+type ContentBlock = ImageContent | TextContent;
+
 interface MessageContext {
   role: 'user' | 'assistant';
-  content: string;
+  content: string | ContentBlock[];
 }
 
 class MessageManager {
   private messages: MessageContext[] = [{ role: 'user', content: SYSTEM_PROMPT }];
 
-  addMessage(role: 'user' | 'assistant', content: string) {
+  addMessage(role: 'user' | 'assistant', content: string | ContentBlock[]) {
     this.messages.push({ role, content });
   }
 
-  getAnthropicMessages(): MessageContext[] {
+  getMessages(): MessageContext[] {
     return this.messages.map(msg => ({
       role: msg.role,
       content: msg.content,
@@ -119,11 +134,9 @@ function getOrCreateContext(chatId: string): MessageManager {
   return context;
 }
 
-export async function* streamAssistantResponse(
-  chatId: string,
-  content: string,
-  model: string = 'claude-3-5-sonnet-latest'
-): AsyncGenerator<string> {
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+export async function* streamAssistantResponse(chatId: string, userMessage: string, attachments?: { content: string; type: string }[]) {
   const keys = await getApiKeys();
   if (!keys.anthropic) {
     throw new Error('Anthropic API key not found. Please add it in settings.');
@@ -134,35 +147,48 @@ export async function* streamAssistantResponse(
     dangerouslyAllowBrowser: true,
   });
 
-  let context = chatContexts.get(chatId);
+  const context = chatContexts.get(chatId);
   if (!context) {
-    context = new MessageManager();
-    chatContexts.set(chatId, context);
+    throw new Error('Chat context not found');
   }
 
-  context.addMessage('user', content);
-  const messages = context.getAnthropicMessages();
+  const messages = context.getMessages();
 
-  try {
-    const stream = await anthropic.messages.stream({
-      messages,
-      model,
-      max_tokens: 4096,
-    });
-
-    let responseContent = '';
-    for await (const message of stream) {
-      if (message.type === 'content_block_delta') {
-        responseContent += message.delta.text;
-        yield message.delta.text;
+  // Format the user message with any image attachments
+  let userContent: ContentBlock[] = [];
+  
+  if (attachments) {
+    // Filter to only allowed image types
+    const imageAttachments = attachments.filter(att => ALLOWED_IMAGE_TYPES.includes(att.type));
+    
+    // Add each image as a content block
+    userContent.push(...imageAttachments.map(att => ({
+      type: 'image' as const,
+      source: {
+        type: 'base64' as const,
+        media_type: att.type,
+        data: att.content
       }
-    }
+    })));
+  }
 
-    // After successful response, add it to the context
-    context.addMessage('assistant', responseContent);
-  } catch (error) {
-    console.error('Error streaming response:', error);
-    throw error;
+  // Add the text message after any images
+  userContent.push({ type: 'text' as const, text: userMessage });
+
+  const stream = await anthropic.messages.create({
+    messages: [...messages.map(msg => ({
+      role: msg.role,
+      content: typeof msg.content === 'string' ? msg.content : msg.content
+    })), { role: 'user', content: userContent }],
+    model: 'claude-3-5-sonnet-latest',
+    max_tokens: 4096,
+    stream: true,
+  });
+
+  for await (const chunk of stream) {
+    if (chunk.type === 'content_block_delta' && 'text' in chunk.delta && chunk.delta.text) {
+      yield chunk.delta.text;
+    }
   }
 }
 

@@ -139,11 +139,6 @@ function App() {
   const renderMainView = () => {
     switch (selectedTool) {
       case 'chat':
-        const WINDOW_SIZE = 3; // Keep 3 chats rendered at a time
-        const currentIndex = chats.findIndex(chat => chat.id === currentChatId);
-        const start = Math.max(0, currentIndex - Math.floor(WINDOW_SIZE / 2));
-        const visibleChats = chats.slice(start, start + WINDOW_SIZE);
-        
         return (
           <>
             <Sidebar
@@ -152,35 +147,22 @@ function App() {
               onSelectChat={handleSelectChat}
               selectedChatId={currentChatId ?? undefined}
             />
-            <div className="chat-views-container">
-              {visibleChats.map(chat => (
-                <div 
-                  key={chat.id}
-                  style={{ 
-                    display: currentChatId === chat.id ? 'flex' : 'none',
-                    width: '100%',
-                    height: '100%'
-                  }}
-                >
-                  <ChatView
-                    currentChatId={chat.id}
-                    initialMessages={messageCache[chat.id]}
-                    onChatCreated={(chat) => {
-                      setChats(prev => [chat, ...prev]);
-                      setCurrentChatId(chat.id);
-                    }}
-                    onChatTitleUpdated={(chatId, title) => {
-                      setChats(prev => prev.map(c =>
-                        c.id === chatId ? { ...c, title } : c
-                      ));
-                    }}
-                    onMessagesUpdated={(chatId, messages) => {
-                      setMessageCache(prev => ({ ...prev, [chatId]: messages }));
-                    }}
-                  />
-                </div>
-              ))}
-            </div>
+            <ChatView
+              currentChatId={currentChatId}
+              initialMessages={currentChatId ? messageCache[currentChatId] : undefined}
+              onChatCreated={(chat) => {
+                setChats(prev => [chat, ...prev]);
+                setCurrentChatId(chat.id);
+              }}
+              onChatTitleUpdated={(chatId, title) => {
+                setChats(prev => prev.map(c =>
+                  c.id === chatId ? { ...c, title } : c
+                ));
+              }}
+              onMessagesUpdated={(chatId, messages) => {
+                setMessageCache(prev => ({ ...prev, [chatId]: messages }));
+              }}
+            />
           </>
         );
       case 'tools':
