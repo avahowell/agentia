@@ -19,8 +19,7 @@ import { ChatInput, ChatInputHandle } from './ChatInput';
 import { ErrorMessage } from './ErrorMessage';
 import {
     streamAssistantResponse,
-    getSummaryTitle,
-    initializeChatContext
+    getSummaryTitle
 } from '../services/ai';
 import { Window, getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from '@tauri-apps/api/core';
@@ -186,11 +185,8 @@ export function ChatView({
                 }
                 if (!isMounted) return;
 
+                // Only update if messages have actually changed
                 setMessages(loaded);
-                onMessagesUpdated(currentChatId, loaded);
-
-                // Initialize the AI context
-                initializeChatContext(currentChatId, loaded);
 
                 // Reset scroll state for new chat
                 userHasScrolled.current = false;
@@ -204,7 +200,7 @@ export function ChatView({
         return () => {
             isMounted = false;
         };
-    }, [currentChatId, initialMessages]);
+    }, [currentChatId, initialMessages, onMessagesUpdated]);
 
     // If initialMessages prop changes while the same chat is active, update local
     useEffect(() => {
@@ -218,6 +214,7 @@ export function ChatView({
     // -------------------------------------------------------------------------
     // Memoize handleAssistantResponse
     const handleAssistantResponse = useCallback(async (chatId: string, userMessage: string, attachments?: { content: string; type: string }[]) => {
+        console.log('handleAssistantResponse called with chatId:', chatId, 'userMessage:', userMessage, 'attachments:', attachments);
         setIsStreaming(true);
         setIsWaitingForFirstToken(true);
 
@@ -226,11 +223,20 @@ export function ChatView({
         let isFirstToken = true;
 
         try {
-            // Read tokens
-            for await (const chunk of streamAssistantResponse(chatId, userMessage, attachments)) {
+            // Pass the current messages array directly to streamAssistantResponse
+            for await (const chunk of streamAssistantResponse(
+                messages.map(msg => ({ 
+                    role: msg.role as 'user' | 'assistant', 
+                    content: msg.content 
+                })),
+                userMessage,
+                attachments
+            )) {
+                console.log('Received chunk:', chunk);
                 assistantMessage += chunk;
                 
                 if (isFirstToken) {
+                    console.log('Creating new message');
                     // First token - create the message
                     setIsWaitingForFirstToken(false);
                     isFirstToken = false;
@@ -272,7 +278,7 @@ export function ChatView({
             setIsStreaming(false);
             setIsWaitingForFirstToken(false);
         }
-    }, [onMessagesUpdated]);
+    }, [messages, onMessagesUpdated]);
 
     // Memoize handleSendMessage
     const handleSendMessage = useCallback(async (content: string, attachments?: { content: string; type: string }[]) => {
@@ -286,11 +292,8 @@ export function ChatView({
                 // Insert user message from server
                 console.log('Adding user message to new chat...');
                 const userMsg = await addMessage(newChat.id, content, 'user', attachments);
-                setMessages((prev) => {
-                    const updated = [...prev, userMsg];
-                    onMessagesUpdated(newChat.id, updated);
-                    return updated;
-                });
+                setMessages([userMsg]); // Initialize with just the user message
+                onMessagesUpdated(newChat.id, [userMsg]);
 
                 console.log('Getting assistant response...');
                 await handleAssistantResponse(newChat.id, content, attachments);
