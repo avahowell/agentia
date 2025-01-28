@@ -222,12 +222,15 @@ export function ChatView({
         const messageId = crypto.randomUUID();
         let isFirstToken = true;
 
+        console.log('Messages before streaming:', messages);
+
         try {
             // Pass the current messages array directly to streamAssistantResponse
             for await (const chunk of streamAssistantResponse(
                 messages.map(msg => ({ 
                     role: msg.role as 'user' | 'assistant', 
-                    content: msg.content 
+                    content: msg.content,
+                    attachments: msg.attachments // Include attachments in message context
                 })),
                 userMessage,
                 attachments

@@ -1,5 +1,5 @@
-import { getApiKeys } from './chat';
 import { Anthropic } from '@anthropic-ai/sdk';
+import { getApiKeys } from './chat';
 
 // SONNET 3.5 SYSTEM PROMPT
 const SYSTEM_PROMPT = `
@@ -84,17 +84,23 @@ Claude is now being connected with a human.
 
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
-type ContentBlock = {
-    type: 'text' | 'image';
-    text?: string;
-    source?: {
+interface ImageBlock {
+    type: 'image';
+    source: {
         type: 'base64';
         media_type: string;
         data: string;
     };
-};
+}
 
-export async function* streamAssistantResponse(messages: Array<{ role: 'user' | 'assistant'; content: string }>, userMessage: string, attachments?: { content: string; type: string }[]) {
+interface TextBlock {
+    type: 'text';
+    text: string;
+}
+
+type ContentBlock = ImageBlock | TextBlock;
+
+export async function* streamAssistantResponse(messages: Array<{ role: 'user' | 'assistant'; content: string; attachments?: { content: string; type: string; name?: string }[] }>, userMessage: string, attachments?: { content: string; type: string }[]) {
     const keys = await getApiKeys();
     if (!keys.anthropic) {
         throw new Error('Anthropic API key not found. Please add it in settings.');
@@ -105,8 +111,34 @@ export async function* streamAssistantResponse(messages: Array<{ role: 'user' | 
         dangerouslyAllowBrowser: true,
     });
 
-    // Format the user message with any image attachments
-    let userContent: ContentBlock[] = [];
+    // Convert messages to content blocks format
+    const formattedMessages = messages.map(msg => {
+        const content: ContentBlock[] = [];
+        
+        // Add attachments if present
+        if (msg.attachments) {
+            const imageAttachments = msg.attachments.filter(att => ALLOWED_IMAGE_TYPES.includes(att.type));
+            content.push(...imageAttachments.map(att => ({
+                type: 'image' as const,
+                source: {
+                    type: 'base64' as const,
+                    media_type: att.type,
+                    data: att.content
+                }
+            })));
+        }
+        
+        // Add text content
+        content.push({ type: 'text' as const, text: msg.content });
+        
+        return {
+            role: msg.role,
+            content: content as any // Type assertion needed for Anthropic API
+        };
+    });
+
+    // Format the current user message with any image attachments
+    const userContent: ContentBlock[] = [];
     
     if (attachments) {
         // Filter to only allowed image types
@@ -128,11 +160,8 @@ export async function* streamAssistantResponse(messages: Array<{ role: 'user' | 
 
     const stream = await anthropic.messages.create({
         messages: [
-            ...messages.map(msg => ({
-                role: msg.role as 'user' | 'assistant',
-                content: msg.content
-            })),
-            { role: 'user' as const, content: userContent }
+            ...formattedMessages,
+            { role: 'user' as const, content: userContent as any } // Type assertion needed for Anthropic API
         ],
         model: 'claude-3-5-sonnet-latest',
         max_tokens: 4096,
