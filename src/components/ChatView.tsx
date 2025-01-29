@@ -165,7 +165,6 @@ export function ChatView({
       userMessage: string,
       attachments?: { content: string; type: string }[],
     ) => {
-      console.log("tools:", await modelTools.getTools())
       setIsStreaming(true);
       setIsWaitingForFirstToken(true);
 
@@ -173,6 +172,9 @@ export function ChatView({
       const messageId = crypto.randomUUID();
 
       try {
+        // Get available tools
+        const availableTools = await modelTools.getTools();
+
         for await (const chunk of streamAssistantResponse(
           messages.map((msg) => ({
             role: msg.role as "user" | "assistant",
@@ -181,6 +183,10 @@ export function ChatView({
           })),
           userMessage,
           attachments,
+          availableTools,
+          async (name: string, args: Record<string, unknown>) => {
+            return await modelTools.executeTool(name, args);
+          }
         )) {
           assistantMessage += chunk;
 

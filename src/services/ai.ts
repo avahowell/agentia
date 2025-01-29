@@ -100,7 +100,18 @@ interface TextBlock {
 
 type ContentBlock = ImageBlock | TextBlock;
 
-export async function* streamAssistantResponse(messages: Array<{ role: 'user' | 'assistant'; content: string; attachments?: { content: string; type: string; name?: string }[] }>, userMessage: string, attachments?: { content: string; type: string }[]) {
+interface ToolCall {
+    name: string;
+    arguments: Record<string, unknown>;
+}
+
+export async function* streamAssistantResponse(
+    messages: Array<{ role: 'user' | 'assistant'; content: string; attachments?: { content: string; type: string; name?: string }[] }>, 
+    userMessage: string, 
+    attachments?: { content: string; type: string }[],
+    tools?: any[],
+    executeToolFn?: (name: string, args: Record<string, unknown>) => Promise<any>
+) {
     const keys = await getApiKeys();
     if (!keys.anthropic) {
         throw new Error('Anthropic API key not found. Please add it in settings.');
@@ -162,19 +173,58 @@ export async function* streamAssistantResponse(messages: Array<{ role: 'user' | 
     // Add the text message after any images
     userContent.push({ type: 'text' as const, text: userMessage });
 
-    const stream = await anthropic.messages.create({
-        messages: [
-            ...formattedMessages,
-            { role: 'user' as const, content: userContent as any } // Type assertion needed for Anthropic API
-        ],
-        model: 'claude-3-5-sonnet-latest',
-        max_tokens: 4096,
-        stream: true,
-    });
+    let currentMessages = [
+        ...formattedMessages,
+        { role: 'user' as const, content: userContent as any }
+    ];
 
-    for await (const chunk of stream) {
-        if (chunk.type === 'content_block_delta' && 'text' in chunk.delta && chunk.delta.text) {
-            yield chunk.delta.text;
+    console.log("tools", tools);
+
+    while (true) {
+        const stream = await anthropic.messages.create({
+            messages: currentMessages,
+            model: 'claude-3-5-sonnet-latest',
+            max_tokens: 4096,
+            stream: true,
+            tools: tools || []
+        });
+
+        let assistantMessage = "";
+        let toolCallReceived = false;
+
+        for await (const chunk of stream) {
+            if (chunk.type === 'content_block_delta') {
+                if ('text' in chunk.delta && chunk.delta.text) {
+                    assistantMessage += chunk.delta.text;
+                    yield chunk.delta.text;
+                } else if ('tool_calls' in chunk.delta && chunk.delta.tool_calls && executeToolFn) {
+                    toolCallReceived = true;
+                    // Execute each tool call
+                    for (const toolCall of chunk.delta.tool_calls as ToolCall[]) {
+                        try {
+                            const result = await executeToolFn(toolCall.name, toolCall.arguments);
+                            // Add tool result to messages
+                            currentMessages.push(
+                                { role: 'assistant' as const, content: [{ type: 'text' as const, text: assistantMessage }] },
+                                { role: 'user' as const, content: [{ type: 'text' as const, text: `Tool ${toolCall.name} returned: ${JSON.stringify(result)}` }] }
+                            );
+                            assistantMessage = ""; // Reset for next part of response
+                        } catch (error: any) {
+                            console.error(`Tool execution failed:`, error);
+                            currentMessages.push(
+                                { role: 'assistant' as const, content: [{ type: 'text' as const, text: assistantMessage }] },
+                                { role: 'user' as const, content: [{ type: 'text' as const, text: `Tool ${toolCall.name} failed with error: ${error?.message || 'Unknown error'}` }] }
+                            );
+                            assistantMessage = ""; // Reset for next part of response
+                        }
+                    }
+                    break; // Exit the stream to start a new one with tool results
+                }
+            }
+        }
+
+        if (!toolCallReceived) {
+            break; // No more tool calls, we're done
         }
     }
 }

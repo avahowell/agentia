@@ -1,14 +1,15 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { TauriMcpTransport } from "./tauri_mcp_transport";
+import { Tool } from '@anthropic-ai/sdk/resources/index.js';
 
 export interface ModelToolHandle {
     client: any;
-    getAnthropicTools: () => Promise<any[]>;
+    getAnthropicTools: () => Promise<Tool[]>;
     executeAnthropicTool: (name: string, args: Record<string, unknown>) => Promise<any>;
 }
 
 export interface CompositeModelTools {
-    getTools: () => Promise<any[]>;
+    getTools: () => Promise<Tool[]>;
     executeTool: (name: string, args: Record<string, unknown>) => Promise<any>;
     addTool: (id: string, handle: ModelToolHandle) => void;
     removeTool: (id: string) => void;
@@ -35,7 +36,7 @@ class CompositeModelToolsImpl implements CompositeModelTools {
         return Array.from(this.enabledTools.keys());
     }
 
-    async getTools(): Promise<any[]> {
+    async getTools(): Promise<Tool[]> {
         // Fetch and combine tools from all enabled handlers
         const allTools = await Promise.all(
             Array.from(this.enabledTools.values()).map(handle => handle.getAnthropicTools())
@@ -91,9 +92,13 @@ export const runNpxMcpServer = async (
 
     return {
         client,
-        getAnthropicTools: async () => {
+        getAnthropicTools: async (): Promise<Tool[]> => {
             const { tools } = await client.listTools();
-            return tools;
+            return tools.map(({ inputSchema, description, name }) => ({
+                name,
+                description,
+                input_schema: inputSchema
+            }));
         },
         executeAnthropicTool: async (name: string, args: Record<string, unknown>) => {
             const result = await client.callTool({
