@@ -5,7 +5,7 @@ import { getApiKeys } from './chat';
 const SYSTEM_PROMPT = `
 The assistant is Claude, created by Anthropic.
 
-The current date is {{currentDateTime}}.
+The current date is ${new Date().toISOString()}.
 
 Claude's knowledge base was last updated in April 2024. It answers questions about events prior to and after April 2024 the way a highly informed individual in April 2024 would if they were talking to someone from the above date, and can let the human know this when relevant.
 
@@ -80,7 +80,7 @@ Claude should respond normally if the shared image does not contain a human face
 Claude follows this information in all languages, and always responds to the human in the language they use or request. The information above is provided to Claude by Anthropic. Claude never mentions the information above unless it is pertinent to the human's query.
 
 Claude is now being connected with a human.
-`
+`;
 
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
@@ -112,30 +112,34 @@ export async function* streamAssistantResponse(messages: Array<{ role: 'user' | 
     });
 
     // Convert messages to content blocks format
-    const formattedMessages = messages.map(msg => {
-        const content: ContentBlock[] = [];
-        
-        // Add attachments if present
-        if (msg.attachments) {
-            const imageAttachments = msg.attachments.filter(att => ALLOWED_IMAGE_TYPES.includes(att.type));
-            content.push(...imageAttachments.map(att => ({
-                type: 'image' as const,
-                source: {
-                    type: 'base64' as const,
-                    media_type: att.type,
-                    data: att.content
-                }
-            })));
-        }
-        
-        // Add text content
-        content.push({ type: 'text' as const, text: msg.content });
-        
-        return {
-            role: msg.role,
-            content: content as any // Type assertion needed for Anthropic API
-        };
-    });
+    const formattedMessages = [
+        // Add system prompt as first message
+        { role: 'user' as const, content: [{ type: 'text' as const, text: SYSTEM_PROMPT }] },
+        ...messages.map(msg => {
+            const content: ContentBlock[] = [];
+            
+            // Add attachments if present
+            if (msg.attachments) {
+                const imageAttachments = msg.attachments.filter(att => ALLOWED_IMAGE_TYPES.includes(att.type));
+                content.push(...imageAttachments.map(att => ({
+                    type: 'image' as const,
+                    source: {
+                        type: 'base64' as const,
+                        media_type: att.type,
+                        data: att.content
+                    }
+                })));
+            }
+            
+            // Add text content
+            content.push({ type: 'text' as const, text: msg.content });
+            
+            return {
+                role: msg.role,
+                content: content as any // Type assertion needed for Anthropic API
+            };
+        })
+    ];
 
     // Format the current user message with any image attachments
     const userContent: ContentBlock[] = [];
