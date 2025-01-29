@@ -12,6 +12,15 @@ interface ChatMessageProps {
   attachments?: FileAttachment[];
 }
 
+interface ToolUseData {
+  type: 'executing';
+  name: string;
+  args?: Record<string, unknown>;
+  result?: unknown;
+  error?: string;
+  status: 'running' | 'complete' | 'error';
+}
+
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B';
   const kb = bytes / 1024;
@@ -62,6 +71,44 @@ function FileAttachmentView({ attachment }: { attachment: FileAttachment }) {
   );
 }
 
+function ToolUseBlock({ data }: { data: ToolUseData }) {
+  const getTitle = () => {
+    switch (data.status) {
+      case 'running':
+        return `Executing Tool: ${data.name}...`;
+      case 'complete':
+        return `Tool Execution Complete: ${data.name}`;
+      case 'error':
+        return `Tool Execution Failed: ${data.name}`;
+    }
+  };
+
+  return (
+    <details className="tool-use-block" open={data.status === 'error'}>
+      <summary className={`tool-use-summary status-${data.status}`}>
+        {getTitle()}
+      </summary>
+      <div className="tool-use-content">
+        {data.args && (
+          <pre className="tool-use-args">
+            <code>Arguments: {JSON.stringify(data.args, null, 2)}</code>
+          </pre>
+        )}
+        {data.status === 'complete' && data.result && (
+          <pre className="tool-use-result">
+            <code>Result: {String(typeof data.result === 'object' ? JSON.stringify(data.result, null, 2) : data.result)}</code>
+          </pre>
+        )}
+        {data.status === 'error' && data.error && (
+          <pre className="tool-use-error">
+            <code>{data.error}</code>
+          </pre>
+        )}
+      </div>
+    </details>
+  );
+}
+
 function ChatMessageComponent({ content, role, timestamp, isTyping, attachments }: ChatMessageProps) {
   const components: Components = {
     code({ className, children, node, ...props }) {
@@ -77,6 +124,33 @@ function ChatMessageComponent({ content, role, timestamp, isTyping, attachments 
     },
   };
 
+  // Split content by tool use markers and render appropriately
+  const renderContent = () => {
+    if (!content) return null;
+    
+    const parts = content.split(/(%%%tool_use_start%%%.*?%%%tool_use_end%%%)/s);
+    return parts.map((part, index) => {
+      if (part.startsWith('%%%tool_use_start%%%')) {
+        const jsonStr = part.replace('%%%tool_use_start%%%', '').replace('%%%tool_use_end%%%', '');
+        try {
+          const data = JSON.parse(jsonStr);
+          return <ToolUseBlock key={index} data={data} />;
+        } catch (e) {
+          return part;
+        }
+      }
+      return role === 'assistant' ? (
+        <ReactMarkdown 
+          key={index}
+          remarkPlugins={[remarkGfm]}
+          components={components}
+        >
+          {part}
+        </ReactMarkdown>
+      ) : part;
+    });
+  };
+
   return (
     <div className={`chat-message ${role}`}>
       <div className="message-content">
@@ -84,12 +158,7 @@ function ChatMessageComponent({ content, role, timestamp, isTyping, attachments 
           {isTyping ? null : (
             <>
               {role === 'assistant' ? (
-                <ReactMarkdown 
-                  remarkPlugins={[remarkGfm]}
-                  components={components}
-                >
-                  {content}
-                </ReactMarkdown>
+                renderContent()
               ) : (
                 <>
                   {attachments && attachments.length > 0 && (

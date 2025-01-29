@@ -1,3 +1,4 @@
+import { MessageParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import { invoke } from '@tauri-apps/api/core';
 
 export interface FileAttachment {
@@ -17,8 +18,7 @@ export interface Chat {
 export interface Message {
   id: string;
   chat_id: string;
-  content: string;
-  role: string;
+  message: MessageParam;
   created_at: string;
   attachments?: FileAttachment[];
 }
@@ -29,7 +29,7 @@ export async function createChat(title: string): Promise<Chat> {
 
 export async function addMessage(
   chatId: string,
-  content: string,
+  message: MessageParam,
   role: string,
   files?: File[] | { content: string; type: string; name?: string; size?: number }[]
 ): Promise<Message> {
@@ -59,9 +59,11 @@ export async function addMessage(
     }));
   }
 
+  console.log(JSON.stringify(message));
+
   return invoke('add_message', {
     chatId,
-    content,
+    content: JSON.stringify(message),
     role,
     attachments
   });

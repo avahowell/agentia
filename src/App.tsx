@@ -6,13 +6,11 @@ import { ChatView } from './components/ChatView';
 import { ToolSidebar } from './components/ToolSidebar';
 import { SettingsView } from './components/SettingsView';
 import { ToolsView } from './components/ToolsView';
-import { Chat, Message, createChat, getChats, getMessages } from './services/chat';
+import { Chat, createChat, getChats } from './services/chat';
 import { ModelToolsProvider } from './contexts/ModelToolsContext';
 
 function App() {
   const [chats, setChats] = useState<Chat[]>([]);
-  const [messageCache, setMessageCache] = useState<Record<string, Message[]>>({});
-  const MAX_CACHED_CHATS = 20; // Only keep messages for the 20 most recent chats
   const [isDark, setIsDark] = useState(() => {
     const savedTheme = localStorage.getItem('theme');
     return savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -23,21 +21,18 @@ function App() {
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false);
   const [hasOpenAiKey, setHasOpenAiKey] = useState(false);
 
-  // Load chats and their messages on mount
+  // Load chats on mount
   useEffect(() => {
-    const loadChatsAndMessages = async () => {
+    const loadChats = async () => {
       try {
         const loadedChats = await getChats();
         setChats(loadedChats);
-        
-        // Don't preload any messages - we'll load them on-demand when chats are selected
-        setMessageCache({});
       } catch (error) {
         console.error('Failed to load chats:', error);
       }
     };
     
-    loadChatsAndMessages();
+    loadChats();
   }, []);
 
   // Check for API keys on mount
@@ -60,52 +55,8 @@ function App() {
     localStorage.setItem('theme', isDark ? 'dark' : 'light');
   }, [isDark]);
 
-  // Add effect to clean up message cache when chats change
-  useEffect(() => {
-    if (Object.keys(messageCache).length > MAX_CACHED_CHATS) {
-      // Get the chat IDs in order of most recently used
-      const recentChatIds = [
-        currentChatId, // Keep current chat's messages
-        ...chats
-          .filter(chat => chat.id !== currentChatId)
-          .map(chat => chat.id)
-      ].filter(Boolean) as string[];
-      
-      // Create new cache with only recent chats
-      const newCache: Record<string, Message[]> = {};
-      recentChatIds.slice(0, MAX_CACHED_CHATS).forEach(id => {
-        if (messageCache[id]) {
-          newCache[id] = messageCache[id];
-        }
-      });
-      
-      setMessageCache(newCache);
-    }
-  }, [chats, messageCache, currentChatId]);
-
-  const handleSelectChat = async (id: string) => {
+  const handleSelectChat = (id: string) => {
     setCurrentChatId(id);
-    
-    // Load messages if not in cache
-    if (!messageCache[id]) {
-      try {
-        const messages = await getMessages(id);
-        setMessageCache(prev => {
-          const newCache = { ...prev, [id]: messages };
-          // If cache is too large, remove oldest entries
-          const cacheIds = Object.keys(newCache);
-          if (cacheIds.length > MAX_CACHED_CHATS) {
-            const recentChatIds = chats.slice(0, MAX_CACHED_CHATS).map(chat => chat.id);
-            return Object.fromEntries(
-              Object.entries(newCache).filter(([id]) => recentChatIds.includes(id))
-            );
-          }
-          return newCache;
-        });
-      } catch (error) {
-        console.error('Failed to load messages:', error);
-      }
-    }
   };
 
   const handleNewChat = async () => {
@@ -113,7 +64,6 @@ function App() {
       const newChat = await createChat('New Chat');
       setChats(prev => [newChat, ...prev]);
       setCurrentChatId(newChat.id);
-      setMessageCache(prev => ({ ...prev, [newChat.id]: [] }));
     } catch (error) {
       console.error('Failed to create new chat:', error);
     }
@@ -147,7 +97,6 @@ function App() {
             />
             <ChatView
               currentChatId={currentChatId}
-              initialMessages={currentChatId ? messageCache[currentChatId] : undefined}
               onChatCreated={(chat) => {
                 setChats(prev => [chat, ...prev]);
                 setCurrentChatId(chat.id);
@@ -156,9 +105,6 @@ function App() {
                 setChats(prev => prev.map(c =>
                   c.id === chatId ? { ...c, title } : c
                 ));
-              }}
-              onMessagesUpdated={(chatId, messages) => {
-                setMessageCache(prev => ({ ...prev, [chatId]: messages }));
               }}
             />
           </>

@@ -1451,3 +1451,57 @@ button {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
+.tool-use-block {
+    margin: 0.5rem 0;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    overflow: hidden;
+}
+
+.tool-use-summary {
+    padding: 0.5rem 1rem;
+    background-color: var(--bg-color);
+    cursor: pointer;
+    user-select: none;
+    font-weight: 500;
+}
+
+.tool-use-content {
+    padding: 1rem;
+    background-color: var(--bg-color-secondary);
+}
+
+.tool-use-args,
+.tool-use-result,
+.tool-use-error {
+    margin: 0;
+    padding: 0.5rem;
+    background-color: var(--bg-color);
+    border-radius: 0.25rem;
+    font-size: 0.9em;
+}
+
+.tool-use-error {
+    color: var(--error-color);
+    border-left: 3px solid var(--error-color);
+}
+
+.tool-use-summary.status-running {
+    background-color: var(--bg-color);
+    border-left: 3px solid #60a5fa;
+}
+
+.tool-use-summary.status-complete {
+    background-color: var(--bg-color);
+    border-left: 3px solid #22c55e;
+}
+
+.tool-use-summary.status-error {
+    background-color: var(--bg-color);
+    border-left: 3px solid #ef4444;
+}
+
+.tool-use-block[open] .tool-use-summary {
+    border-bottom: 1px solid var(--border-color);
+}
+
