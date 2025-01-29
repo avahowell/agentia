@@ -6,8 +6,7 @@ import { ChatView } from './components/ChatView';
 import { ToolSidebar } from './components/ToolSidebar';
 import { SettingsView } from './components/SettingsView';
 import { ToolsView } from './components/ToolsView';
-import { Chat, Message, createChat, addMessage, getChats, getMessages, updateChatTitle } from './services/chat';
-import { streamAssistantResponse, clearChatContext, initializeChatContext, getSummaryTitle } from './services/ai';
+import { Chat, Message, createChat, getChats, getMessages } from './services/chat';
 import { ModelToolsProvider } from './contexts/ModelToolsContext';
 
 function App() {
