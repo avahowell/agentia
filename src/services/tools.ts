@@ -46,10 +46,12 @@ class CompositeModelToolsImpl implements CompositeModelTools {
 
     async executeTool(name: string, args: Record<string, unknown>): Promise<any> {
         // Try each handler until we find one that can execute the tool
+        console.log("executeTool", name, args);
         for (const handle of this.enabledTools.values()) {
             try {
                 const tools = await handle.getAnthropicTools();
                 if (tools.some(tool => tool.name === name)) {
+                    console.log("EXECUTING TOOL", name, args);
                     return await handle.executeAnthropicTool(name, args);
                 }
             } catch (error) {
@@ -101,11 +103,13 @@ export const runNpxMcpServer = async (
             }));
         },
         executeAnthropicTool: async (name: string, args: Record<string, unknown>) => {
+            console.log("executeAnthropicTool", name, args);
             const result = await client.callTool({
                 name,
                 arguments: args
             });
-            return result.result;
+            console.log("executeAnthropicTool result", result);
+            return result;
         }
     };
 };

@@ -1,4 +1,5 @@
 import { Anthropic } from '@anthropic-ai/sdk';
+import { Tool } from '@anthropic-ai/sdk/resources/index.js';
 import { getApiKeys } from './chat';
 
 // SONNET 3.5 SYSTEM PROMPT
@@ -102,14 +103,20 @@ type ContentBlock = ImageBlock | TextBlock;
 
 interface ToolCall {
     name: string;
-    arguments: Record<string, unknown>;
+    input: Record<string, unknown>;
+}
+
+interface ToolUseBlock {
+    type: 'tool_use';
+    name: string;
+    input: Record<string, unknown>;
 }
 
 export async function* streamAssistantResponse(
     messages: Array<{ role: 'user' | 'assistant'; content: string; attachments?: { content: string; type: string; name?: string }[] }>, 
     userMessage: string, 
     attachments?: { content: string; type: string }[],
-    tools?: any[],
+    tools?: Tool[],
     executeToolFn?: (name: string, args: Record<string, unknown>) => Promise<any>
 ) {
     const keys = await getApiKeys();
@@ -191,35 +198,47 @@ export async function* streamAssistantResponse(
 
         let assistantMessage = "";
         let toolCallReceived = false;
+        let currentToolName = "";
+        let currentToolInputString = "";
 
         for await (const chunk of stream) {
-            if (chunk.type === 'content_block_delta') {
+            console.log("chunk", chunk);
+            if (chunk.type === 'content_block_start' && chunk.content_block?.type === 'tool_use') {
+                console.log("tool use start", chunk);
+                toolCallReceived = true;
+                currentToolName = chunk.content_block.name;
+            } else if (chunk.type === 'content_block_delta') {
                 if ('text' in chunk.delta && chunk.delta.text) {
                     assistantMessage += chunk.delta.text;
                     yield chunk.delta.text;
-                } else if ('tool_calls' in chunk.delta && chunk.delta.tool_calls && executeToolFn) {
-                    toolCallReceived = true;
-                    // Execute each tool call
-                    for (const toolCall of chunk.delta.tool_calls as ToolCall[]) {
-                        try {
-                            const result = await executeToolFn(toolCall.name, toolCall.arguments);
-                            // Add tool result to messages
-                            currentMessages.push(
-                                { role: 'assistant' as const, content: [{ type: 'text' as const, text: assistantMessage }] },
-                                { role: 'user' as const, content: [{ type: 'text' as const, text: `Tool ${toolCall.name} returned: ${JSON.stringify(result)}` }] }
-                            );
-                            assistantMessage = ""; // Reset for next part of response
-                        } catch (error: any) {
-                            console.error(`Tool execution failed:`, error);
-                            currentMessages.push(
-                                { role: 'assistant' as const, content: [{ type: 'text' as const, text: assistantMessage }] },
-                                { role: 'user' as const, content: [{ type: 'text' as const, text: `Tool ${toolCall.name} failed with error: ${error?.message || 'Unknown error'}` }] }
-                            );
-                            assistantMessage = ""; // Reset for next part of response
-                        }
-                    }
-                    break; // Exit the stream to start a new one with tool results
+                } else if (chunk.delta.type === 'input_json_delta' && chunk.delta.partial_json) {
+                    currentToolInputString += chunk.delta.partial_json;
                 }
+            } else if (chunk.type === 'content_block_stop' && currentToolName) {
+                try {
+                    const toolArgs = currentToolInputString ? JSON.parse(currentToolInputString) : {};
+                    console.log("executing tool", currentToolName, toolArgs);
+                    const result = await executeToolFn?.(currentToolName, toolArgs);
+                    console.log("tool result", result);
+                    
+                    // Add tool result to messages
+                    currentMessages.push(
+                        { role: 'assistant' as const, content: [{ type: 'text' as const, text: assistantMessage }] },
+                        { role: 'user' as const, content: [{ type: 'text' as const, text: `Tool ${currentToolName} returned: ${JSON.stringify(result)}` }] }
+                    );
+                    assistantMessage = ""; // Reset for next part of response
+                } catch (error: any) {
+                    console.error(`Tool execution failed:`, error);
+                    currentMessages.push(
+                        { role: 'assistant' as const, content: [{ type: 'text' as const, text: assistantMessage }] },
+                        { role: 'user' as const, content: [{ type: 'text' as const, text: `Tool ${currentToolName} failed with error: ${error?.message || 'Unknown error'}` }] }
+                    );
+                    assistantMessage = ""; // Reset for next part of response
+                }
+                // Reset tool state
+                currentToolName = "";
+                currentToolInputString = "";
+                break; // Exit the stream to start a new one with tool results
             }
         }
 

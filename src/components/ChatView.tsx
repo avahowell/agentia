@@ -185,6 +185,7 @@ export function ChatView({
           attachments,
           availableTools,
           async (name: string, args: Record<string, unknown>) => {
+            console.log("executing tool", name, args);
             return await modelTools.executeTool(name, args);
           }
         )) {
