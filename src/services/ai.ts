@@ -8,23 +8,27 @@ import { SYSTEM_PROMPT } from './system-prompt.ts';
 interface ToolCallStart {
     type: 'tool_call_start';
     name: string;
+    tool_use_id: string;
 }
 
 interface ToolCallUpdate {
     type: 'tool_call_update';
     name: string;
+    tool_use_id: string;
     partialInput: string;
 }
 
 interface ToolCallComplete {
     type: 'tool_call_complete';
     name: string;
+    tool_use_id: string;
     args: Record<string, unknown>;
 }
 
 interface ToolResultSuccess {
     type: 'tool_result';
     name: string;
+    tool_use_id: string;
     args: Record<string, unknown>;
     result: unknown;
 }
@@ -32,6 +36,7 @@ interface ToolResultSuccess {
 interface ToolResultError {
     type: 'tool_error';
     name: string;
+    tool_use_id: string;
     args: Record<string, unknown>;
     error: string;
 }
@@ -72,6 +77,10 @@ function formatMessages(
     ];
 
     return [
+        {
+            role: 'user',
+            content: SYSTEM_PROMPT
+        },
         ...messages,
         {
             role: 'user',
@@ -103,6 +112,7 @@ export async function* streamAssistantResponse(
     });
 
     let currentMessages = formatMessages(messages, userMessage, images);
+    console.log("📨 Formatted messages:", currentMessages);
 
     let currentToolName = "";
     let currentToolInputString = "";
@@ -133,6 +143,7 @@ export async function* streamAssistantResponse(
                         yield {
                             type: 'tool_call_start',
                             name: chunk.content_block.name,
+                            tool_use_id: chunk.content_block.id
                         } as const;
                     }
                     break;
@@ -180,7 +191,8 @@ export async function* streamAssistantResponse(
                                     type: 'tool_use',
                                     id: currentToolUseId,
                                     name: currentToolName,
-                                    input: JSON.parse(currentToolInputString),
+                                    // handle the case where the input is empty
+                                    input: currentToolInputString === "" ? {} : JSON.parse(currentToolInputString),
                                 }
                             ]
                         });
@@ -191,12 +203,13 @@ export async function* streamAssistantResponse(
                         assistantResponse = "";
                         // execute tool call
                         try {
-                            const result = await executeToolFn?.(currentToolName, JSON.parse(currentToolInputString));
+                            const result = await executeToolFn?.(currentToolName, currentToolInputString === "" ? {} : JSON.parse(currentToolInputString));
                             const result_stringified = JSON.stringify(result);
                             yield {
                                 type: 'tool_result',
                                 name: currentToolName,
-                                args: JSON.parse(currentToolInputString),
+                                tool_use_id: currentToolUseId,
+                                args: currentToolInputString === "" ? {} : JSON.parse(currentToolInputString),
                                 result: result_stringified
                             }
                             currentMessages.push({
@@ -217,7 +230,8 @@ export async function* streamAssistantResponse(
                             yield {
                                 type: 'tool_error',
                                 name: currentToolName,
-                                args: JSON.parse(currentToolInputString),
+                                tool_use_id: currentToolUseId,
+                                args: currentToolInputString === "" ? {} : JSON.parse(currentToolInputString),
                                 error: e.message
                             }
                             currentMessages.push({

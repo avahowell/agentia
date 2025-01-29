@@ -15,10 +15,20 @@ export interface Chat {
   updated_at: string;
 }
 
+export interface RawMessage {
+  id: string;
+  chat_id: string;
+  content: string;
+  role: string;
+  created_at: string;
+  attachments?: FileAttachment[];
+}
+
 export interface Message {
   id: string;
   chat_id: string;
-  message: MessageParam;
+  content: MessageParam[];
+  role: string;
   created_at: string;
   attachments?: FileAttachment[];
 }
@@ -29,7 +39,7 @@ export async function createChat(title: string): Promise<Chat> {
 
 export async function addMessage(
   chatId: string,
-  message: MessageParam,
+  messages: MessageParam[],
   role: string,
   files?: File[] | { content: string; type: string; name?: string; size?: number }[]
 ): Promise<Message> {
@@ -59,14 +69,18 @@ export async function addMessage(
     }));
   }
 
-  console.log(JSON.stringify(message));
-
-  return invoke('add_message', {
+  const result = await invoke<RawMessage>('add_message', {
     chatId,
-    content: JSON.stringify(message),
+    content: JSON.stringify(messages), // Already an array, no need to wrap
     role,
     attachments
   });
+
+  // Parse the JSON string back into MessageParam[]
+  return {
+    ...result,
+    content: JSON.parse(result.content)
+  };
 }
 
 export async function getChats(): Promise<Chat[]> {
@@ -74,7 +88,12 @@ export async function getChats(): Promise<Chat[]> {
 }
 
 export async function getMessages(chatId: string): Promise<Message[]> {
-  return invoke('get_messages', { chatId });
+  const messages = await invoke<RawMessage[]>('get_messages', { chatId });
+  // Parse the JSON string content back into MessageParam[]
+  return messages.map(msg => ({
+    ...msg,
+    content: JSON.parse(msg.content)
+  }));
 }
 
 export async function saveApiKey(keyType: 'anthropic' | 'openai', keyValue: string): Promise<void> {

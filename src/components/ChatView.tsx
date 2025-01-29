@@ -4,7 +4,6 @@ import React, {
   useEffect,
   useCallback,
   useMemo,
-  useReducer,
 } from "react";
 import {
   Message,
@@ -13,13 +12,14 @@ import {
   getMessages,
   createChat,
   updateChatTitle,
+  FileAttachment,
 } from "../services/chat";
 import { ChatMessage } from "./ChatMessage";
 import { ChatInput, ChatInputHandle } from "./ChatInput";
 import { ErrorMessage } from "./ErrorMessage";
 import { streamAssistantResponse, getSummaryTitle } from "../services/ai";
 import { useModelTools } from '../contexts/ModelToolsContext';
-import { MessageParam } from "@anthropic-ai/sdk/resources/index.mjs";
+import { MessageParam, ContentBlockParam, ImageBlockParam } from "@anthropic-ai/sdk/resources/messages/messages";
 
 interface ChatViewProps {
   currentChatId: string | null;
@@ -32,249 +32,6 @@ interface ErrorItem {
   message: string;
 }
 
-interface ChatViewState {
-  messages: Message[];
-  isStreaming: boolean;
-  isWaitingForFirstToken: boolean;
-  currentStreamingMessage: {
-    id: string;
-    content: string;
-  } | null;
-  errors: ErrorItem[];
-  isAutoFollowing: boolean;
-  showScrollButton: boolean;
-}
-
-type ChatViewAction =
-  | { type: 'START_STREAMING' }
-  | { type: 'RECEIVED_FIRST_TOKEN', content: string, messageId: string, chatId: string }
-  | { type: 'UPDATE_STREAMING_MESSAGE', content: string, chatId: string }
-  | { type: 'LOAD_MESSAGES', chatId: string }
-  | { type: 'MESSAGES_LOADED', messages: Message[] }
-  | { type: 'UPDATE_MESSAGE_CONTEXT', messages: MessageParam[] }
-  | { type: 'APPEND_MESSAGE', message: Message }
-  | { type: 'ADD_USER_MESSAGE', content: MessageParam, chatId: string, attachments?: { content: string; type: string }[] }
-  | { type: 'COMPLETE_STREAMING', chatId: MessageParam, messageId: string, content: string, isFinal: boolean }
-  | { type: 'ADD_ERROR', error: ErrorItem }
-  | { type: 'REMOVE_ERROR', errorId: string }
-  | { type: 'SET_AUTO_FOLLOWING', isFollowing: boolean }
-  | { type: 'SET_SCROLL_BUTTON', show: boolean };
-
-// Add this before the reducer
-function logStateTransition(prevState: ChatViewState, action: ChatViewAction, nextState: ChatViewState) {
-  // Only log specific actions related to messages and streaming
-  const relevantActions = [
-    'START_STREAMING',
-    'RECEIVED_FIRST_TOKEN',
-    'UPDATE_STREAMING_MESSAGE',
-    'UPDATE_MESSAGES',
-    'COMPLETE_STREAMING'
-  ];
-
-  if (!relevantActions.includes(action.type)) {
-    return nextState;
-  }
-
-  console.group(`ChatView Update: ${action.type}`);
-
-  // Log message changes
-  if (prevState.messages !== nextState.messages) {
-    console.log('Messages:', {
-      count: `${prevState.messages.length} -> ${nextState.messages.length}`,
-      latest: nextState.messages[nextState.messages.length - 1]
-    });
-  }
-
-  // Log streaming state
-  if (prevState.isStreaming !== nextState.isStreaming ||
-    prevState.isWaitingForFirstToken !== nextState.isWaitingForFirstToken) {
-    console.log('Streaming State:', {
-      isStreaming: `${prevState.isStreaming} -> ${nextState.isStreaming}`,
-      waitingForToken: `${prevState.isWaitingForFirstToken} -> ${nextState.isWaitingForFirstToken}`
-    });
-  }
-
-  // Log streaming message updates
-  if (prevState.currentStreamingMessage?.content !== nextState.currentStreamingMessage?.content) {
-    console.log('Streaming Message:', {
-      id: nextState.currentStreamingMessage?.id,
-      contentLength: nextState.currentStreamingMessage?.content.length
-    });
-  }
-
-  console.groupEnd();
-  return nextState;
-}
-
-// Simplify middleware to not depend on state
-async function chatViewMiddleware(action: ChatViewAction, dispatch: React.Dispatch<ChatViewAction>) {
-  switch (action.type) {
-    case 'LOAD_MESSAGES':
-      try {
-        const messages = await getMessages(action.chatId);
-        dispatch({ type: 'MESSAGES_LOADED', messages });
-      } catch (error) {
-        console.error("Failed to load messages:", error);
-        const errorId = crypto.randomUUID();
-        dispatch({
-          type: 'ADD_ERROR',
-          error: {
-            id: errorId,
-            message: error instanceof Error ? error.message : "Failed to load messages"
-          }
-        });
-      }
-      break;
-
-    case 'ADD_USER_MESSAGE':
-      try {
-        const message = await addMessage(action.chatId, action.content, "user", action.attachments);
-        // Only append the new message instead of reloading all
-        dispatch({ type: 'APPEND_MESSAGE', message: message });
-      } catch (error) {
-        console.error("Failed to add user message:", error);
-        const errorId = crypto.randomUUID();
-        dispatch({
-          type: 'ADD_ERROR',
-          error: {
-            id: errorId,
-            message: error instanceof Error ? error.message : "Failed to add message"
-          }
-        });
-      }
-      break;
-
-    case 'COMPLETE_STREAMING':
-      try {
-        // Use the same ID for both ephemeral and final message
-        console.log("adding message", action.chatId, action.content, "assistant");
-        const message = await addMessage(action.chatId, action.content, "assistant");
-        // Only append the new message instead of reloading all
-        dispatch({ type: 'APPEND_MESSAGE', message: message });
-      } catch (error) {
-        console.error("Failed to save streaming message:", error);
-        // Only reload all messages if we failed to save the final message
-        dispatch({ type: 'LOAD_MESSAGES', chatId: action.chatId });
-      }
-      break;
-  }
-}
-
-// Update the custom dispatch hook to not pass state
-function useAsyncDispatch(dispatch: React.Dispatch<ChatViewAction>) {
-  return useCallback(
-    (action: ChatViewAction) => {
-      dispatch(action);
-      chatViewMiddleware(action, dispatch).catch(console.error);
-    },
-    [dispatch]
-  );
-}
-
-// Update the reducer to handle the new actions
-function chatViewReducer(state: ChatViewState, action: ChatViewAction): ChatViewState {
-  const nextState = (() => {
-    switch (action.type) {
-      case 'START_STREAMING':
-        return {
-          ...state,
-          isStreaming: true,
-          isWaitingForFirstToken: true
-        };
-
-      case 'RECEIVED_FIRST_TOKEN': {
-        const newMessage = {
-          id: action.messageId,
-          chat_id: action.chatId,
-          content: action.content,
-          role: "assistant",
-          created_at: new Date().toISOString(),
-          attachments: undefined,
-        };
-        return {
-          ...state,
-          isWaitingForFirstToken: false,
-          currentStreamingMessage: {
-            id: action.messageId,
-            content: action.content
-          },
-          messages: [...state.messages, newMessage]
-        };
-      }
-
-      case 'UPDATE_STREAMING_MESSAGE': {
-        if (!state.currentStreamingMessage) return state;
-        const { id, content } = state.currentStreamingMessage;
-
-        console.log("updating message", action.chatId, action.content);
-        console.log("current message", content + action.content);
-
-        return {
-          ...state,
-          currentStreamingMessage: {
-            id,
-            content: content + action.content
-          },
-          messages: state.messages.map(msg =>
-            msg.id === id
-              ? { ...msg, content: content + action.content }
-              : msg
-          )
-        };
-      }
-
-      case 'APPEND_MESSAGE':
-        return {
-          ...state,
-          messages: [...state.messages, action.message]
-        };
-
-      case 'MESSAGES_LOADED':
-        return {
-          ...state,
-          messages: action.messages
-        };
-
-      case 'COMPLETE_STREAMING':
-        return {
-          ...state,
-          isStreaming: false,
-          isWaitingForFirstToken: false,
-          currentStreamingMessage: null,
-        };
-
-      case 'ADD_ERROR':
-        return {
-          ...state,
-          errors: [...state.errors, action.error]
-        };
-
-      case 'REMOVE_ERROR':
-        return {
-          ...state,
-          errors: state.errors.filter(e => e.id !== action.errorId)
-        };
-
-      case 'SET_AUTO_FOLLOWING':
-        return {
-          ...state,
-          isAutoFollowing: action.isFollowing
-        };
-
-      case 'SET_SCROLL_BUTTON':
-        return {
-          ...state,
-          showScrollButton: action.show
-        };
-
-      default:
-        return state;
-    }
-  })();
-
-  return logStateTransition(state, action, nextState);
-}
-
 export function ChatView({
   currentChatId,
   onChatCreated,
@@ -283,36 +40,46 @@ export function ChatView({
   const chatWindowRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isMountedRef = useRef(true);
+  const dragCounter = useRef(0);
+  const chatInputRef = useRef<ChatInputHandle>(null);
 
-  const [state, baseDispatch] = useReducer(chatViewReducer, {
-    messages: [],
-    isStreaming: false,
-    isWaitingForFirstToken: false,
-    currentStreamingMessage: null,
-    errors: [],
-    isAutoFollowing: true,
-    showScrollButton: false
-  });
+  // State management
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [errors, setErrors] = useState<ErrorItem[]>([]);
+  const [isAutoFollowing, setIsAutoFollowing] = useState(true);
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   const modelTools = useModelTools();
-
-  // Create async dispatch that handles database operations
-  const dispatch = useAsyncDispatch(baseDispatch);
 
   // Load messages when currentChatId changes
   useEffect(() => {
     if (!currentChatId) {
-      dispatch({ type: 'MESSAGES_LOADED', messages: [] });
+      setMessages([]);
       return;
     }
 
-    // Load messages for the current chat
-    dispatch({ type: 'LOAD_MESSAGES', chatId: currentChatId });
+    const loadMessages = async () => {
+      try {
+        const loadedMessages = await getMessages(currentChatId);
+        setMessages(loadedMessages);
+      } catch (error) {
+        console.error("Failed to load messages:", error);
+        const errorId = crypto.randomUUID();
+        setErrors(prev => [...prev, {
+          id: errorId,
+          message: error instanceof Error ? error.message : "Failed to load messages"
+        }]);
+      }
+    };
+
+    loadMessages();
 
     return () => {
       isMountedRef.current = false;
     };
-  }, [currentChatId]); // Remove dispatch from dependencies
+  }, [currentChatId]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -326,24 +93,46 @@ export function ChatView({
     async (
       chatId: string,
       userMessage: string,
-      attachments?: { content: string; type: string }[],
+      attachments?: FileAttachment[],
     ) => {
-      dispatch({ type: 'START_STREAMING' });
-
-      let assistantMessage = "";
-      let currentMessageId = "";
-      let isFirstChunk = true;
-      let hasReceivedFirstToken = false;
+      setIsStreaming(true);
 
       try {
         const availableTools = await modelTools.getTools();
+        const imageBlocks: ImageBlockParam[] = attachments?.map(att => ({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: att.type.startsWith('image/') 
+              ? (att.type as "image/jpeg" | "image/png" | "image/gif" | "image/webp") 
+              : "image/jpeg",
+            data: att.content
+          }
+        })) || [];
 
-        let firstTokenReceived = false;
+        const assistantMessage: Message = {
+          id: crypto.randomUUID(),
+          chat_id: chatId,
+          content: [{
+            role: 'assistant',
+            content: '...'
+          }],
+          role: 'assistant',
+          created_at: new Date().toISOString(),
+          attachments: []
+        };
+        setMessages(prev => [...prev, assistantMessage]);
+
+        // Accumulate context blocks as they arrive
+        const contextBlocks: MessageParam[] = [];
+        let streamingText = '';  // Track streaming text separately
 
         for await (const chunk of streamAssistantResponse(
-          state.messages.map((msg) => msg.message),
+          messages
+            .filter(msg => msg.content?.length > 0)
+            .flatMap(msg => msg.content),
           userMessage,
-          attachments,
+          imageBlocks,
           availableTools,
           async (name: string, args: Record<string, unknown>) => {
             return await modelTools.executeTool(name, args);
@@ -352,110 +141,126 @@ export function ChatView({
           console.log("chunk", chunk);
           switch (chunk.type) {
             case 'text_chunk':
-              if (isFirstChunk) {
-                isFirstChunk = false;
-                currentMessageId = crypto.randomUUID();
-                dispatch({ type: 'RECEIVED_FIRST_TOKEN', messageId: currentMessageId, chatId: chatId, content: chunk.content });
-                continue;
-              }
-
-              console.log("updating message", chatId, chunk.content);
-              dispatch({ type: 'UPDATE_STREAMING_MESSAGE', chatId: chatId, content: chunk.content });
-              break;
-            case 'tool_call_complete':
-              break;
-            case 'tool_result':
-              break;
-            case 'tool_error':
-              break;
-            case 'response_complete':
+              streamingText += chunk.content;
+              setMessages(prev => prev.map(msg => 
+                msg.id === assistantMessage.id 
+                  ? { 
+                      ...msg,
+                      content: contextBlocks.length > 0
+                        ? [
+                            ...contextBlocks,
+                            {
+                              role: 'assistant',
+                              content: [{ type: 'text', text: streamingText }]
+                            }
+                          ]
+                        : [{
+                            role: 'assistant',
+                            content: streamingText
+                          }]
+                    }
+                  : msg
+              ));
               break;
             case 'new_context_message':
-              console.log("new_context_message", chunk.message);
-              dispatch({ type: 'APPEND_MESSAGE', chatId: chatId, content: chunk.message.content });
+              contextBlocks.push(chunk.message);
+              streamingText = ''; // Reset streaming text when we get new context
+              setMessages(prev => prev.map(msg =>
+                msg.id === assistantMessage.id
+                  ? {
+                      ...msg,
+                      content: contextBlocks
+                    }
+                  : msg
+              ));
               break;
-              
+            case 'response_complete':
+              // Save the assistant message to the database
+              await addMessage(
+                chatId,
+                contextBlocks,
+                'assistant'
+              );
+              break;
           }
         }
       } catch (error) {
         console.error("Error in handleAssistantResponse:", error);
-      } 
+        const errorId = crypto.randomUUID();
+        setErrors(prev => [...prev, {
+          id: errorId,
+          message: error instanceof Error ? error.message : "An error occurred during assistant response"
+        }]);
+      } finally {
+        setIsStreaming(false);
+      }
     },
-    [state.messages, modelTools, dispatch]
+    [messages, modelTools]
   );
 
   // Handle sending messages
   const handleSendMessage = useCallback(
     async (content: string, attachments?: { content: string; type: string }[]) => {
-      dispatch({ type: 'SET_AUTO_FOLLOWING', isFollowing: true });
-      dispatch({ type: 'SET_SCROLL_BUTTON', show: false });
+      setIsAutoFollowing(true);
+      setShowScrollButton(false);
 
       try {
         if (!currentChatId) {
           const newChat = await createChat("...");
           onChatCreated(newChat);
 
-          dispatch({
-            type: 'ADD_USER_MESSAGE',
-            chatId: newChat.id,
-            content,
-            attachments
-          });
+          const contentBlocks: ContentBlockParam[] = [
+            { type: 'text', text: content }
+          ];
+          const message = await addMessage(newChat.id, [{ role: 'user', content: contentBlocks }], "user", attachments);
+          setMessages(prev => [...prev, message]);
 
-          await handleAssistantResponse(newChat.id, content, attachments);
+          await handleAssistantResponse(newChat.id, content, attachments?.map(att => ({
+            ...att,
+            name: 'attachment',
+            size: att.content.length * 0.75
+          })));
 
           const title = await getSummaryTitle(content);
           await updateChatTitle(newChat.id, title);
           onChatTitleUpdated(newChat.id, title);
         } else {
-          dispatch({
-            type: 'ADD_USER_MESSAGE',
-            chatId: currentChatId,
-            content,
-            attachments
-          });
+          const contentBlocks: ContentBlockParam[] = [
+            { type: 'text', text: content }
+          ];
+          const message = await addMessage(currentChatId, [{ role: 'user', content: contentBlocks }], "user", attachments);
+          setMessages(prev => [...prev, message]);
 
-          const userCountBefore = state.messages.filter(m => m.role === "user").length;
-          if (userCountBefore === 0) {
+          const userMessages = messages.filter(m => m.content[0].role === 'user');
+          if (userMessages.length === 0) {
             const title = await getSummaryTitle(content);
             await updateChatTitle(currentChatId, title);
             onChatTitleUpdated(currentChatId, title);
           }
 
-          await handleAssistantResponse(currentChatId, content, attachments);
+          await handleAssistantResponse(currentChatId, content, attachments?.map(att => ({
+            ...att,
+            name: 'attachment',
+            size: att.content.length * 0.75
+          })));
         }
       } catch (error: unknown) {
         console.error("Error in handleSendMessage:", error);
-        if (currentChatId && state.currentStreamingMessage) {
-          dispatch({
-            type: 'COMPLETE_STREAMING',
-            chatId: currentChatId,
-            messageId: state.currentStreamingMessage.id,
-            content: state.currentStreamingMessage.content,
-            isFinal: true
-          });
-        }
-
         if (currentChatId) {
-          dispatch({ type: 'LOAD_MESSAGES', chatId: currentChatId });
+          const loadedMessages = await getMessages(currentChatId);
+          setMessages(loadedMessages);
         }
 
         const errorMessage = error instanceof Error ? error.message : "An error occurred";
         const errorId = crypto.randomUUID();
-        dispatch({ type: 'ADD_ERROR', error: { id: errorId, message: errorMessage } });
+        setErrors(prev => [...prev, { id: errorId, message: errorMessage }]);
         setTimeout(() => {
-          dispatch({ type: 'REMOVE_ERROR', errorId });
+          setErrors(prev => prev.filter(e => e.id !== errorId));
         }, 5000);
       }
     },
-    [currentChatId, handleAssistantResponse, onChatCreated, onChatTitleUpdated, dispatch]
+    [currentChatId, handleAssistantResponse, onChatCreated, onChatTitleUpdated, messages]
   );
-
-  // Replace individual state hooks with reducer state
-  const { messages, isStreaming, isWaitingForFirstToken, errors, isAutoFollowing, showScrollButton } = state;
-
-  const [isDragging, setIsDragging] = useState(false);
-  const dragCounter = useRef(0);
 
   const SCROLL_THRESHOLD_PX = 10;
 
@@ -466,19 +271,17 @@ export function ChatView({
     // Are we near the bottom?
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (distanceFromBottom > SCROLL_THRESHOLD_PX) {
-      // The user scrolled away from bottom => disable auto-follow
-      dispatch({ type: 'SET_AUTO_FOLLOWING', isFollowing: false });
+      setIsAutoFollowing(false);
     } else {
-      // The user is effectively still at the bottom => keep auto-follow
-      dispatch({ type: 'SET_AUTO_FOLLOWING', isFollowing: true });
+      setIsAutoFollowing(true);
     }
 
     if (distanceFromBottom > 100) {
-      dispatch({ type: 'SET_SCROLL_BUTTON', show: true });
+      setShowScrollButton(true);
     } else {
-      dispatch({ type: 'SET_SCROLL_BUTTON', show: false });
+      setShowScrollButton(false);
     }
-  }, [dispatch]);
+  }, []);
 
   // Set up scroll listener
   useEffect(() => {
@@ -497,109 +300,20 @@ export function ChatView({
 
   // Reset scroll behavior when changing chats
   useEffect(() => {
-    dispatch({ type: 'SET_AUTO_FOLLOWING', isFollowing: true });
-    dispatch({ type: 'SET_SCROLL_BUTTON', show: false });
+    setIsAutoFollowing(true);
+    setShowScrollButton(false);
     messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
-  }, [currentChatId, dispatch]);
+  }, [currentChatId]);
 
   const scrollToBottom = useCallback(() => {
-    dispatch({ type: 'SET_AUTO_FOLLOWING', isFollowing: true });
-    dispatch({ type: 'SET_SCROLL_BUTTON', show: false });
+    setIsAutoFollowing(true);
+    setShowScrollButton(false);
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [dispatch]);
-
-  // -------------------------------------------------------------------------
-  // 6) Dismiss errors
-  // -------------------------------------------------------------------------
-  const handleDismissError = useCallback((errorId: string) => {
-    dispatch({ type: 'REMOVE_ERROR', errorId });
   }, []);
 
-  
-  const combinedMessages = useMemo(() => {
-    return messages; 
-    /*
-    const result: Message[] = [];
-    let currentAssistantMessage: Message | null = null;
-
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      const nextMsg = i < messages.length - 1 ? messages[i + 1] : null;
-
-      if (msg.role === 'assistant') {
-        if (!currentAssistantMessage) {
-          // Start new assistant message group
-          currentAssistantMessage = { ...msg };
-
-          // If next message is a system message (tool result), reconstruct tool use blocks
-          if (nextMsg?.role === 'system' && nextMsg.content.startsWith('Tool ')) {
-            const match = nextMsg.content.match(/Tool (\w+) returned: (.+)/);
-            if (match) {
-              const [_, toolName, resultJson] = match;
-              const { args, result } = JSON.parse(resultJson);
-              // Add both running and complete tool use blocks
-              currentAssistantMessage.content += `\n\n%%%tool_use_start%%%${JSON.stringify({
-                type: 'executing',
-                name: toolName,
-                args,
-                status: 'running'
-              })}%%%tool_use_end%%%\n\n%%%tool_use_start%%%${JSON.stringify({
-                type: 'executing',
-                name: toolName,
-                args,
-                result,
-                status: 'complete'
-              })}%%%tool_use_end%%%\n\n`;
-            }
-          }
-        } else {
-          // Combine with previous assistant message
-          currentAssistantMessage.content += '\n' + msg.content;
-        }
-      } else if (msg.role === 'user') {
-        // When we hit a user message, save any pending assistant message and add the user message
-        if (currentAssistantMessage) {
-          result.push(currentAssistantMessage);
-          currentAssistantMessage = null;
-        }
-        result.push(msg);
-      }
-      // Skip system messages as they're used for reconstruction
-    }
-
-    // Add final assistant message if pending
-    if (currentAssistantMessage) {
-      result.push(currentAssistantMessage);
-    }
-
-    return result;
-    */
-  }, [messages]);
-  
-  // Then, memoize the message list components
-  const messageList = useMemo(() => {
-    return combinedMessages.map((message) => (
-      <ChatMessage
-        key={message.id}
-        content={message.message.content}
-        role={message.role}
-        timestamp={new Date(message.created_at)}
-        isTyping={false}
-        attachments={message.attachments}
-      />
-    ));
-  }, [combinedMessages]);
-
-  // Memoize the error list
-  const errorList = useMemo(() => {
-    return errors.map((error) => (
-      <ErrorMessage
-        key={error.id}
-        message={error.message}
-        onDismiss={() => handleDismissError(error.id)}
-      />
-    ));
-  }, [errors, handleDismissError]);
+  const handleDismissError = useCallback((errorId: string) => {
+    setErrors(prev => prev.filter(e => e.id !== errorId));
+  }, []);
 
   // Use useEffect to bind drag events
   useEffect(() => {
@@ -682,13 +396,84 @@ export function ChatView({
     };
   }, []);
 
-  // Add ref for ChatInput
-  const chatInputRef = useRef<ChatInputHandle>(null);
+  // Then, memoize the message list components
+  const messageList = useMemo(() => {
+    return messages.map((message, index) => {
+      const isLastMessage = index === messages.length - 1;
+      const isAssistantMessage = message.role === 'assistant';
+      const isStreaming = isLastMessage && isAssistantMessage && message.content[0].content === '...';
 
+      let displayContent = '';
+      
+      if (isStreaming) {
+        displayContent = '...';
+      } else if (message.content.length === 1 && typeof message.content[0].content === 'string') {
+        // Simple text content during streaming
+        displayContent = message.content[0].content;
+      } else if (Array.isArray(message.content[0].content)) {
+        // Process content blocks (both during streaming and completed)
+        displayContent = message.content.map(param => {
+          if (typeof param.content === 'string') {
+            return param.content;
+          }
+          return param.content.map(block => {
+            if (block.type === 'text') {
+              return block.text;
+            } else if (block.type === 'tool_use') {
+              // Show tool use in running state
+              return `\n%%%tool_use_start%%%${JSON.stringify({
+                type: 'executing',
+                name: block.name,
+                args: block.input || {},
+                status: 'running'
+              })}%%%tool_use_end%%%\n`;
+            } else if (block.type === 'tool_result') {
+              // Find corresponding tool use block
+              const toolUse = message.content
+                .flatMap(p => Array.isArray(p.content) ? p.content : [])
+                .find(b => 
+                  b.type === 'tool_use' && 
+                  block.tool_use_id === b.id
+                ) as { type: 'tool_use', name: string, input: Record<string, unknown>, id: string } | undefined;
+              
+              // Show tool result in completed state
+              return `\n%%%tool_use_start%%%${JSON.stringify({
+                type: 'executing',
+                name: toolUse?.name || '',
+                args: toolUse?.input || {},
+                result: block.content,
+                status: 'complete'
+              })}%%%tool_use_end%%%\n`;
+            }
+            return '';
+          }).join('');
+        }).join('\n');
+      }
 
-  // -------------------------------------------------------------------------
-  // Render
-  // -------------------------------------------------------------------------
+      return (
+        <ChatMessage
+          key={message.id}
+          content={displayContent}
+          role={message.role}
+          timestamp={new Date(message.created_at)}
+          isTyping={isStreaming}
+          attachments={message.attachments}
+        />
+      );
+    });
+  }, [messages]);
+
+  // Memoize the error list
+  const errorList = useMemo(() => {
+    return errors.map((error) => (
+      <ErrorMessage
+        key={error.id}
+        message={error.message}
+        onDismiss={() => handleDismissError(error.id)}
+      />
+    ));
+  }, [errors, handleDismissError]);
+
   return (
     <div className="main-content flex flex-col h-full">
       <div className="chat-window flex-1 relative" ref={chatWindowRef}>
@@ -697,14 +482,6 @@ export function ChatView({
         ) : (
           <>
             {messageList}
-            {isWaitingForFirstToken && (
-              <ChatMessage
-                content=""
-                role="assistant"
-                timestamp={new Date()}
-                isTyping={true}
-              />
-            )}
             <div ref={messagesEndRef} />
           </>
         )}

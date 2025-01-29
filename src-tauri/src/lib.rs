@@ -34,7 +34,7 @@ pub struct FileAttachment {
 pub struct Message {
     pub id: String,
     pub chat_id: String,
-    pub content: String,
+    pub content: String, // JSON-encoded MessageParam[]
     pub role: String,
     pub created_at: String,
     pub attachments: Option<Vec<FileAttachment>>,
