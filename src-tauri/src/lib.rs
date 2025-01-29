@@ -8,8 +8,8 @@ use tauri::{path::PathResolver, Manager, State};
 use ts_rs::TS;
 use uuid::Uuid;
 
-mod sqlite_db;
 mod mcp;
+mod sqlite_db;
 
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -127,15 +127,16 @@ pub fn init_db(app: &tauri::App) -> Result<Connection> {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             let conn = init_db(app).expect("Database initialization failed");
             app.manage(DbConnection(Mutex::new(conn)));
-            
+
             // Initialize MCP state
             app.manage(mcp::McpState(Arc::new(Mutex::new(HashMap::new()))));
-            
+
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())

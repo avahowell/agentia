@@ -112,7 +112,7 @@ export async function* streamAssistantResponse(
     });
 
     let currentMessages = formatMessages(messages, userMessage, images);
-    console.log("📨 Formatted messages:", currentMessages);
+    console.log("📨 context:", currentMessages);
 
     let currentToolName = "";
     let currentToolInputString = "";
@@ -157,6 +157,12 @@ export async function* streamAssistantResponse(
                         assistantResponse += chunk.delta.text;
                     } else if (chunk.delta.type === 'input_json_delta') {
                         currentToolInputString += chunk.delta.partial_json;
+                        yield {
+                            type: 'tool_call_update',
+                            name: currentToolName,
+                            tool_use_id: currentToolUseId,
+                            partialInput: chunk.delta.partial_json
+                        } as const;
                     }
                     break;
                 }

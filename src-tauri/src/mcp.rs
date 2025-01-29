@@ -1,10 +1,10 @@
+use serde::{Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use tauri::State;
-use serde::{Deserialize, Serialize};
-use serde_json;
 
 #[derive(Debug)]
 pub struct McpServer {
@@ -24,9 +24,13 @@ struct JsonRpcMessage {
 }
 
 impl McpServer {
-    fn new(process: Child, stdin: std::process::ChildStdin, stdout_rx: mpsc::Receiver<String>) -> Self {
-        Self { 
-            process, 
+    fn new(
+        process: Child,
+        stdin: std::process::ChildStdin,
+        stdout_rx: mpsc::Receiver<String>,
+    ) -> Self {
+        Self {
+            process,
             stdin,
             stdout_rx,
         }
@@ -51,12 +55,15 @@ impl McpServer {
         }
 
         // For requests, wait for and collect the next line of output
-        match self.stdout_rx.recv_timeout(std::time::Duration::from_secs(5)) {
-            Ok(output) =>  {
-                // log output 
+        match self
+            .stdout_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+        {
+            Ok(output) => {
+                // log output
                 println!("output: {}", output);
                 Ok(output)
-            },
+            }
             Err(_) => Err("Timeout waiting for command output".to_string()),
         }
     }
@@ -83,8 +90,16 @@ pub async fn start_mcp_server(
         return Err("Server with this ID already exists".to_string());
     }
 
-    let shell = if cfg!(target_os = "windows") { "cmd" } else { "sh" };
-    let shell_arg = if cfg!(target_os = "windows") { "/C" } else { "-c" };
+    let shell = if cfg!(target_os = "windows") {
+        "cmd"
+    } else {
+        "sh"
+    };
+    let shell_arg = if cfg!(target_os = "windows") {
+        "/C"
+    } else {
+        "-c"
+    };
 
     let mut cmd = Command::new(shell);
     cmd.arg(shell_arg)
@@ -149,7 +164,7 @@ pub async fn send_mcp_command(
     command: String,
     state: State<'_, McpState>,
 ) -> Result<String, String> {
-    // log 
+    // log
     println!("sending command: {}", command);
     let mut servers = state.0.lock().map_err(|e| format!("Lock error: {}", e))?;
 

@@ -126,6 +126,7 @@ export function ChatView({
         // Accumulate context blocks as they arrive
         const contextBlocks: MessageParam[] = [];
         let streamingText = '';  // Track streaming text separately
+        let streamingToolInput = '';
 
         for await (const chunk of streamAssistantResponse(
           messages
@@ -138,7 +139,6 @@ export function ChatView({
             return await modelTools.executeTool(name, args);
           }
         )) {
-          console.log("chunk", chunk);
           switch (chunk.type) {
             case 'text_chunk':
               streamingText += chunk.content;
@@ -161,6 +161,35 @@ export function ChatView({
                     }
                   : msg
               ));
+              break;
+
+            case 'tool_call_start':
+              streamingToolInput = '';
+              break;
+
+            case 'tool_call_update':
+              streamingToolInput += chunk.partialInput;
+              console.log("🔧 streamingToolInput", streamingToolInput);
+              setMessages(prev => prev.map(msg => 
+                msg.id === assistantMessage.id
+                  ? {
+                      ...msg,
+                      content: contextBlocks.length > 0
+                        ? [
+                            ...contextBlocks,
+                            {
+                              role: 'assistant',
+                              content: [{ type: 'tool_use', id: chunk.tool_use_id, name: chunk.name, input: streamingToolInput }]
+                            }
+                          ]
+                        : [{
+                            role: 'assistant',
+                            content: [{ type: 'tool_use', id: chunk.tool_use_id, name: chunk.name, input: streamingToolInput }]
+                          }]
+                    }
+                  : msg
+              ));
+
               break;
             case 'new_context_message':
               contextBlocks.push(chunk.message);
@@ -420,30 +449,24 @@ export function ChatView({
             if (block.type === 'text') {
               return block.text;
             } else if (block.type === 'tool_use') {
-              // Show tool use in running state
+              // Find if there's a corresponding result for this tool use
+              const toolResult = message.content
+                .flatMap(p => Array.isArray(p.content) ? p.content : [])
+                .find(b => 
+                  b.type === 'tool_result' && 
+                  b.tool_use_id === block.id
+                ) as { type: 'tool_result', content: string } | undefined;
+              
               return `\n%%%tool_use_start%%%${JSON.stringify({
                 type: 'executing',
                 name: block.name,
                 args: block.input || {},
-                status: 'running'
+                result: toolResult?.content,
+                status: toolResult ? 'complete' : 'running'
               })}%%%tool_use_end%%%\n`;
             } else if (block.type === 'tool_result') {
-              // Find corresponding tool use block
-              const toolUse = message.content
-                .flatMap(p => Array.isArray(p.content) ? p.content : [])
-                .find(b => 
-                  b.type === 'tool_use' && 
-                  block.tool_use_id === b.id
-                ) as { type: 'tool_use', name: string, input: Record<string, unknown>, id: string } | undefined;
-              
-              // Show tool result in completed state
-              return `\n%%%tool_use_start%%%${JSON.stringify({
-                type: 'executing',
-                name: toolUse?.name || '',
-                args: toolUse?.input || {},
-                result: block.content,
-                status: 'complete'
-              })}%%%tool_use_end%%%\n`;
+              // Skip tool results as they're handled in the tool_use block
+              return '';
             }
             return '';
           }).join('');

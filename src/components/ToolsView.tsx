@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { runNpxMcpServer, ModelToolHandle } from '../services/tools';
 import { useModelTools } from '../contexts/ModelToolsContext';
+import { open } from '@tauri-apps/plugin-dialog';
 
 interface Tool {
   id: string;
@@ -124,11 +125,25 @@ export function ToolsView() {
 
   const handleToolEnable = async (tool: Tool) => {
     try {
-      const handle = await runNpxMcpServer(tool.command!, {});
-      modelTools.addTool(tool.id, handle);
-      setTools(tools => tools.map(t => 
-        t.id === tool.id ? { ...t, enabled: true, handle } : t
-      ));
+      // Special handling for filesystem tool
+      if (tool.id === 'filesystem') {
+        if (!filesystemPath.trim()) {
+          alert('Please enter a filesystem directory path first');
+          return;
+        }
+        const command = `${tool.command} ${filesystemPath}`;
+        const handle = await runNpxMcpServer(command, {});
+        modelTools.addTool(tool.id, handle);
+        setTools(tools => tools.map(t => 
+          t.id === tool.id ? { ...t, enabled: true, handle } : t
+        ));
+      } else {
+        const handle = await runNpxMcpServer(tool.command!, {});
+        modelTools.addTool(tool.id, handle);
+        setTools(tools => tools.map(t => 
+          t.id === tool.id ? { ...t, enabled: true, handle } : t
+        ));
+      }
     } catch (error) {
       console.error(`Failed to enable tool ${tool.id}:`, error);
     }
@@ -147,6 +162,25 @@ export function ToolsView() {
 
   const [filesystemPath, setFilesystemPath] = useState('');
 
+  const handleDirectorySelect = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: 'Select Directory for Filesystem Access'
+      });
+      
+      if (selected && typeof selected === 'string') {
+        setFilesystemPath(selected);
+      }
+    } catch (error) {
+      console.error('Failed to open directory picker:', error);
+      if (error instanceof Error && error.message !== 'User cancelled the selection') {
+        alert('Failed to open directory picker. Please try again.');
+      }
+    }
+  };
+
   const toggleTool = async (tool: Tool) => {
     if (!tool.enabled) {
       await handleToolEnable(tool);
@@ -164,6 +198,7 @@ export function ToolsView() {
             key={tool.id}
             className={`tool-config-button ${tool.enabled ? 'enabled' : ''}`}
             onClick={() => toggleTool(tool)}
+            disabled={tool.id === 'filesystem' && !tool.enabled && !filesystemPath.trim()}
           >
             <div className="tool-icon">{tool.icon}</div>
             <span className="tool-name">{tool.name}</span>
@@ -174,18 +209,36 @@ export function ToolsView() {
         ))}
       </div>
 
-      {tools.find(t => t.id === 'filesystem')?.enabled && (
-        <div className="filesystem-config">
-          <label htmlFor="filesystem-path">Filesystem Directory</label>
+      <div className="filesystem-config" style={{ marginBottom: '1rem', maxWidth: '600px' }}>
+        <div style={{ marginBottom: '0.5rem' }}>
+          <p style={{ fontSize: '0.9rem', color: 'var(--color-text-secondary)', marginBottom: '0.5rem' }}>
+            Select a directory that the AI assistant will be allowed to access. For security, the assistant will only be able to read and write files within this directory.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
           <input
             id="filesystem-path"
             type="text"
             value={filesystemPath}
-            onChange={(e) => setFilesystemPath(e.target.value)}
-            placeholder="Enter directory path"
+            readOnly
+            placeholder="No directory selected"
+            style={{ flex: 1 }}
           />
+          <button 
+            onClick={handleDirectorySelect}
+            style={{
+              padding: '0.5rem 1rem',
+              whiteSpace: 'nowrap',
+              backgroundColor: 'var(--color-background-light)',
+              border: '1px solid var(--color-border)',
+              borderRadius: '4px',
+              cursor: 'pointer'
+            }}
+          >
+            Choose Directory
+          </button>
         </div>
-      )}
+      </div>
     </div>
   );
 } 
