@@ -3,12 +3,13 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{path::PathResolver, Manager, State};
 use ts_rs::TS;
 use uuid::Uuid;
 
-mod commands;
+mod sqlite_db;
+mod mcp;
 
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -131,17 +132,23 @@ pub fn run() {
         .setup(|app| {
             let conn = init_db(app).expect("Database initialization failed");
             app.manage(DbConnection(Mutex::new(conn)));
+            
+            // Initialize MCP state
+            app.manage(mcp::McpState(Arc::new(Mutex::new(HashMap::new()))));
+            
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            commands::create_chat,
-            commands::add_message,
-            commands::get_chats,
-            commands::get_messages,
-            commands::save_api_key,
-            commands::get_api_keys,
-            commands::update_chat_title,
+            sqlite_db::create_chat,
+            sqlite_db::add_message,
+            sqlite_db::get_chats,
+            sqlite_db::get_messages,
+            sqlite_db::save_api_key,
+            sqlite_db::get_api_keys,
+            sqlite_db::update_chat_title,
+            mcp::start_mcp_server,
+            mcp::send_mcp_command,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

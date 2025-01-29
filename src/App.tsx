@@ -8,6 +8,7 @@ import { SettingsView } from './components/SettingsView';
 import { ToolsView } from './components/ToolsView';
 import { Chat, Message, createChat, addMessage, getChats, getMessages, updateChatTitle } from './services/chat';
 import { streamAssistantResponse, clearChatContext, initializeChatContext, getSummaryTitle } from './services/ai';
+import { ModelToolsProvider } from './contexts/ModelToolsContext';
 
 function App() {
   const [chats, setChats] = useState<Chat[]>([]);
@@ -179,15 +180,17 @@ function App() {
   };
 
   return (
-    <div className="app-container">
-      <ToolSidebar
-        selectedTool={selectedTool}
-        onSelectTool={setSelectedTool}
-        isDark={isDark}
-        onToggleTheme={() => setIsDark(!isDark)}
-      />
-      {renderMainView()}
-    </div>
+    <ModelToolsProvider>
+      <div className="app-container">
+        <ToolSidebar
+          selectedTool={selectedTool}
+          onSelectTool={setSelectedTool}
+          isDark={isDark}
+          onToggleTheme={() => setIsDark(!isDark)}
+        />
+        {renderMainView()}
+      </div>
+    </ModelToolsProvider>
   );
 }
 

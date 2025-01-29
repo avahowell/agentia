@@ -17,6 +17,7 @@ import { ChatMessage } from "./ChatMessage";
 import { ChatInput, ChatInputHandle } from "./ChatInput";
 import { ErrorMessage } from "./ErrorMessage";
 import { streamAssistantResponse, getSummaryTitle } from "../services/ai";
+import { useModelTools } from '../contexts/ModelToolsContext';
 
 interface ChatViewProps {
   currentChatId: string | null;
@@ -53,6 +54,11 @@ export function ChatView({
 
   // Temporary error messages
   const [errors, setErrors] = useState<ErrorItem[]>([]);
+
+  const modelTools = useModelTools();
+  
+  // Now you can use modelTools.getTools() to list all available tools
+  // and modelTools.executeTool(name, args) to execute a specific tool
 
   const [isDragging, setIsDragging] = useState(false);
   const dragCounter = useRef(0);
@@ -159,6 +165,7 @@ export function ChatView({
       userMessage: string,
       attachments?: { content: string; type: string }[],
     ) => {
+      console.log("tools:", await modelTools.getTools())
       setIsStreaming(true);
       setIsWaitingForFirstToken(true);
 
@@ -413,6 +420,7 @@ export function ChatView({
   // Add ref for ChatInput
   const chatInputRef = useRef<ChatInputHandle>(null);
 
+  
   // -------------------------------------------------------------------------
   // Render
   // -------------------------------------------------------------------------

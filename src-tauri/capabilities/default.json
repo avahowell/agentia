@@ -9,6 +9,20 @@
     "core:default",
     "opener:default",
     "fs:default",
-    "shell:default"
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "run-npx-command",
+          "cmd": "npx",
+          "args": [
+            "-y",
+            {
+              "validator": "\\S+"
+            }
+          ]
+        }
+      ]
+    }
   ]
 }
