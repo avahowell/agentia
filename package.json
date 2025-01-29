@@ -12,6 +12,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.33.1",
     "@tauri-apps/plugin-fs": "~2.2.0",
+    "@tauri-apps/plugin-shell": "~2.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "@tauri-apps/api": "^2.0.1",

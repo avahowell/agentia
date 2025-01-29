@@ -126,6 +126,7 @@ pub fn init_db(app: &tauri::App) -> Result<Connection> {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             let conn = init_db(app).expect("Database initialization failed");

@@ -32,5 +32,26 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "shell": {
+      "permissions": [
+        {
+          "identifier": "shell:allow-execute",
+          "allow": [
+            {
+              "name": "run-npx-command",
+              "cmd": "npx",
+              "args": [
+                "-y",
+                {
+                  "validator": "\\S+"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
   }
 }

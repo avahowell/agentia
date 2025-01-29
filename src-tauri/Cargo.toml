@@ -27,4 +27,5 @@ ts-rs = "7.0"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.4", features = ["v4", "serde"] }
 tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
 
