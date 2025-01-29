@@ -57,7 +57,7 @@ export function ChatView({
   const [isDragging, setIsDragging] = useState(false);
   const dragCounter = useRef(0);
 
-  const SCROLL_THRESHOLD_PX = 25;
+  const SCROLL_THRESHOLD_PX = 10;
 
   const handleScroll = useCallback(() => {
     const el = chatWindowRef.current;
@@ -68,10 +68,14 @@ export function ChatView({
     if (distanceFromBottom > SCROLL_THRESHOLD_PX) {
       // The user scrolled away from bottom => disable auto-follow
       setIsAutoFollowing(false);
-      setShowScrollButton(true);
     } else {
       // The user is effectively still at the bottom => keep auto-follow
       setIsAutoFollowing(true);
+    }
+
+    if (distanceFromBottom > 100) {
+      setShowScrollButton(true);
+    } else {
       setShowScrollButton(false);
     }
   }, []);

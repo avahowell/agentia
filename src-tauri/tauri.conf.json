@@ -13,9 +13,9 @@
     "windows": [
       {
         "title": "agentia",
-        "width": 1200,
+        "width": 1500,
         "dragDropEnabled": false,
-        "height": 800
+        "height": 1000
       }
     ],
     "security": {

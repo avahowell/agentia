@@ -29,18 +29,11 @@ function App() {
       try {
         const loadedChats = await getChats();
         setChats(loadedChats);
-
-        // Load messages for the 10 most recent chats
-        const recentChats = loadedChats.slice(0, 10);
-        const messagesPromises = recentChats.map(chat => 
-          getMessages(chat.id).then(messages => [chat.id, messages] as const)
-        );
         
-        const messagesResults = await Promise.all(messagesPromises);
-        const newMessageCache = Object.fromEntries(messagesResults);
-        setMessageCache(newMessageCache);
+        // Don't preload any messages - we'll load them on-demand when chats are selected
+        setMessageCache({});
       } catch (error) {
-        console.error('Failed to load chats and messages:', error);
+        console.error('Failed to load chats:', error);
       }
     };
     
@@ -70,12 +63,17 @@ function App() {
   // Add effect to clean up message cache when chats change
   useEffect(() => {
     if (Object.keys(messageCache).length > MAX_CACHED_CHATS) {
-      // Get the most recent chat IDs
-      const recentChatIds = chats.slice(0, MAX_CACHED_CHATS).map(chat => chat.id);
+      // Get the chat IDs in order of most recently used
+      const recentChatIds = [
+        currentChatId, // Keep current chat's messages
+        ...chats
+          .filter(chat => chat.id !== currentChatId)
+          .map(chat => chat.id)
+      ].filter(Boolean) as string[];
       
       // Create new cache with only recent chats
       const newCache: Record<string, Message[]> = {};
-      recentChatIds.forEach(id => {
+      recentChatIds.slice(0, MAX_CACHED_CHATS).forEach(id => {
         if (messageCache[id]) {
           newCache[id] = messageCache[id];
         }
@@ -83,7 +81,7 @@ function App() {
       
       setMessageCache(newCache);
     }
-  }, [chats, messageCache]);
+  }, [chats, messageCache, currentChatId]);
 
   const handleSelectChat = async (id: string) => {
     setCurrentChatId(id);
