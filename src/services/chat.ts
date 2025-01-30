@@ -96,15 +96,16 @@ export async function getMessages(chatId: string): Promise<Message[]> {
   }));
 }
 
-export async function saveApiKey(keyType: 'anthropic' | 'openai', keyValue: string): Promise<void> {
+export async function saveApiKey(keyType: 'anthropic' | 'openai' | 'exa', keyValue: string): Promise<void> {
   await invoke('save_api_key', { keyType, keyValue });
 }
 
-export async function getApiKeys(): Promise<{ anthropic?: string; openai?: string }> {
+export async function getApiKeys(): Promise<{ anthropic?: string; openai?: string; exa?: string }> {
   const keys = await invoke<Record<string, string>>('get_api_keys');
   return {
     anthropic: keys['anthropic'],
-    openai: keys['openai']
+    openai: keys['openai'],
+    exa: keys['exa']
   };
 }
 

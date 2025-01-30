@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
-use tauri::State;
+use tauri::{State, Emitter};
 
 #[derive(Debug)]
 pub struct McpServer {
@@ -37,10 +37,6 @@ impl McpServer {
     }
 
     fn send_command(&mut self, command: &str) -> Result<String, String> {
-        // Parse the command to check if it's a notification
-        let message: JsonRpcMessage = serde_json::from_str(command)
-            .map_err(|e| format!("Failed to parse JSON-RPC message: {}", e))?;
-
         // Send the command
         self.stdin
             .write_all(format!("{}\n", command).as_bytes())
@@ -49,23 +45,7 @@ impl McpServer {
             .flush()
             .map_err(|e| format!("Failed to flush stdin: {}", e))?;
 
-        // If this is a notification (no id), don't wait for a response
-        if message.id.is_none() {
-            return Ok("".to_string());
-        }
-
-        // For requests, wait for and collect the next line of output
-        match self
-            .stdout_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-        {
-            Ok(output) => {
-                // log output
-                println!("output: {}", output);
-                Ok(output)
-            }
-            Err(_) => Err("Timeout waiting for command output".to_string()),
-        }
+        Ok("".to_string())
     }
 }
 
@@ -83,6 +63,7 @@ pub async fn start_mcp_server(
     command: String,
     env_vars: Vec<EnvVar>,
     state: State<'_, McpState>,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
     let mut servers = state.0.lock().map_err(|e| format!("Lock error: {}", e))?;
 
@@ -129,12 +110,17 @@ pub async fn start_mcp_server(
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
         let tx = stdout_tx.clone();
+        let server_id_clone = server_id.clone();
+        let app_handle = app.clone();
         std::thread::spawn(move || {
             for line in reader.lines() {
                 if let Ok(line) = line {
-                    if tx.send(line).is_err() {
+                    // Send to channel for command responses
+                    if tx.send(line.clone()).is_err() {
                         break;
                     }
+                    // Emit event to frontend
+                    let _ = app_handle.emit(&format!("mcp://stdout/{}", server_id_clone), line);
                 }
             }
         });
@@ -143,10 +129,14 @@ pub async fn start_mcp_server(
     // Set up stderr reading in a separate thread
     if let Some(stderr) = child.stderr.take() {
         let reader = BufReader::new(stderr);
+        let server_id_clone = server_id.clone();
+        let app_handle = app.clone();
         std::thread::spawn(move || {
             for line in reader.lines() {
                 if let Ok(line) = line {
                     eprintln!("Process error: {}", line);
+                    // Emit stderr events to frontend
+                    let _ = app_handle.emit(&format!("mcp://stderr/{}", server_id_clone), line);
                 }
             }
         });

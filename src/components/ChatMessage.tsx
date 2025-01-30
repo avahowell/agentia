@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
 import { FileAttachment } from '../services/chat';
+import { openUrl } from '@tauri-apps/plugin-opener';
 
 interface ChatMessageProps {
   content: string;
@@ -122,6 +123,26 @@ function ChatMessageComponent({ content, role, timestamp, isTyping, attachments 
         </code>
       );
     },
+    a(props) {
+      const { href, children } = props;
+      return (
+        <a
+          {...props}
+          onClick={async (e) => {
+            e.preventDefault();
+            if (href) {
+              try {
+                await openUrl(href);
+              } catch (error) {
+                console.error('Failed to open link:', error);
+              }
+            }
+          }}
+        >
+          {children}
+        </a>
+      );
+    }
   };
 
   // Split content by tool use markers and render appropriately

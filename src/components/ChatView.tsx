@@ -18,8 +18,12 @@ import { ChatMessage } from "./ChatMessage";
 import { ChatInput, ChatInputHandle } from "./ChatInput";
 import { ErrorMessage } from "./ErrorMessage";
 import { streamAssistantResponse, getSummaryTitle } from "../services/ai";
-import { useModelTools } from '../contexts/ModelToolsContext';
-import { MessageParam, ContentBlockParam, ImageBlockParam } from "@anthropic-ai/sdk/resources/messages/messages";
+import { useModelTools } from "../contexts/ModelToolsContext";
+import {
+  MessageParam,
+  ContentBlockParam,
+  ImageBlockParam,
+} from "@anthropic-ai/sdk/resources/messages/messages";
 
 interface ChatViewProps {
   currentChatId: string | null;
@@ -51,7 +55,7 @@ export function ChatView({
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
-  const modelTools = useModelTools();
+  const modelTools = useModelTools().modelTools;
 
   // Load messages when currentChatId changes
   useEffect(() => {
@@ -67,10 +71,16 @@ export function ChatView({
       } catch (error) {
         console.error("Failed to load messages:", error);
         const errorId = crypto.randomUUID();
-        setErrors(prev => [...prev, {
-          id: errorId,
-          message: error instanceof Error ? error.message : "Failed to load messages"
-        }]);
+        setErrors((prev) => [
+          ...prev,
+          {
+            id: errorId,
+            message:
+              error instanceof Error
+                ? error.message
+                : "Failed to load messages",
+          },
+        ]);
       }
     };
 
@@ -99,137 +109,224 @@ export function ChatView({
 
       try {
         const availableTools = await modelTools.getTools();
-        const imageBlocks: ImageBlockParam[] = attachments?.map(att => ({
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: att.type.startsWith('image/') 
-              ? (att.type as "image/jpeg" | "image/png" | "image/gif" | "image/webp") 
-              : "image/jpeg",
-            data: att.content
-          }
-        })) || [];
+        const imageBlocks: ImageBlockParam[] =
+          attachments?.map((att) => ({
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: att.type.startsWith("image/")
+                ? (att.type as
+                    | "image/jpeg"
+                    | "image/png"
+                    | "image/gif"
+                    | "image/webp")
+                : "image/jpeg",
+              data: att.content,
+            },
+          })) || [];
 
         const assistantMessage: Message = {
           id: crypto.randomUUID(),
           chat_id: chatId,
-          content: [{
-            role: 'assistant',
-            content: '...'
-          }],
-          role: 'assistant',
+          content: [
+            {
+              role: "assistant",
+              content: "...",
+            },
+          ],
+          role: "assistant",
           created_at: new Date().toISOString(),
-          attachments: []
+          attachments: [],
         };
-        setMessages(prev => [...prev, assistantMessage]);
+        setMessages((prev) => [...prev, assistantMessage]);
 
         // Accumulate context blocks as they arrive
         const contextBlocks: MessageParam[] = [];
-        let streamingText = '';  // Track streaming text separately
-        let streamingToolInput = '';
+        let streamingText = ""; // Track streaming text separately
+        let streamingToolInput = "";
 
         for await (const chunk of streamAssistantResponse(
           messages
-            .filter(msg => msg.content?.length > 0)
-            .flatMap(msg => msg.content),
+            .filter((msg) => msg.content?.length > 0)
+            .flatMap((msg) => msg.content)
+            .filter((block) => {
+              if (Array.isArray(block.content)) {
+                return block.content.some(
+                  (b) => b.type === "text",
+                  // elide tool results, images, and documents in context to
+                  // save tokens
+                );
+              }
+              return true;
+            }),
           userMessage,
           imageBlocks,
           availableTools,
           async (name: string, args: Record<string, unknown>) => {
             return await modelTools.executeTool(name, args);
-          }
+          },
         )) {
           switch (chunk.type) {
-            case 'text_chunk':
+            case "text_chunk":
               streamingText += chunk.content;
-              setMessages(prev => prev.map(msg => 
-                msg.id === assistantMessage.id 
-                  ? { 
-                      ...msg,
-                      content: contextBlocks.length > 0
-                        ? [
-                            ...contextBlocks,
-                            {
-                              role: 'assistant',
-                              content: [{ type: 'text', text: streamingText }]
-                            }
-                          ]
-                        : [{
-                            role: 'assistant',
-                            content: streamingText
-                          }]
-                    }
-                  : msg
-              ));
-              break;
-
-            case 'tool_call_start':
-              streamingToolInput = '';
-              break;
-
-            case 'tool_call_update':
-              streamingToolInput += chunk.partialInput;
-              console.log("🔧 streamingToolInput", streamingToolInput);
-              setMessages(prev => prev.map(msg => 
-                msg.id === assistantMessage.id
-                  ? {
-                      ...msg,
-                      content: contextBlocks.length > 0
-                        ? [
-                            ...contextBlocks,
-                            {
-                              role: 'assistant',
-                              content: [{ type: 'tool_use', id: chunk.tool_use_id, name: chunk.name, input: streamingToolInput }]
-                            }
-                          ]
-                        : [{
-                            role: 'assistant',
-                            content: [{ type: 'tool_use', id: chunk.tool_use_id, name: chunk.name, input: streamingToolInput }]
-                          }]
-                    }
-                  : msg
-              ));
-
-              break;
-            case 'new_context_message':
-              contextBlocks.push(chunk.message);
-              streamingText = ''; // Reset streaming text when we get new context
-              setMessages(prev => prev.map(msg =>
-                msg.id === assistantMessage.id
-                  ? {
-                      ...msg,
-                      content: contextBlocks
-                    }
-                  : msg
-              ));
-              break;
-            case 'response_complete':
-              // Save the assistant message to the database
-              await addMessage(
-                chatId,
-                contextBlocks,
-                'assistant'
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMessage.id
+                    ? {
+                        ...msg,
+                        content:
+                          contextBlocks.length > 0
+                            ? [
+                                ...contextBlocks,
+                                {
+                                  role: "assistant",
+                                  content: [
+                                    { type: "text", text: streamingText },
+                                  ],
+                                },
+                              ]
+                            : [
+                                {
+                                  role: "assistant",
+                                  content: streamingText,
+                                },
+                              ],
+                      }
+                    : msg,
+                ),
               );
+              break;
+
+            case "tool_call_start":
+              streamingToolInput = "";
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMessage.id
+                    ? {
+                        ...msg,
+                        content:
+                          contextBlocks.length > 0
+                            ? [
+                                ...contextBlocks,
+                                {
+                                  role: "assistant",
+                                  content: [
+                                    {
+                                      type: "tool_use",
+                                      id: chunk.tool_use_id,
+                                      name: chunk.name,
+                                      input: "",
+                                    },
+                                  ],
+                                },
+                              ]
+                            : [
+                                {
+                                  role: "assistant",
+                                  content: [
+                                    {
+                                      type: "tool_use",
+                                      id: chunk.tool_use_id,
+                                      name: chunk.name,
+                                      input: "",
+                                    },
+                                  ],
+                                },
+                              ],
+                      }
+                    : msg,
+                ),
+              );
+              break;
+
+            case "tool_call_update":
+              streamingToolInput += chunk.partialInput;
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMessage.id
+                    ? {
+                        ...msg,
+                        content:
+                          contextBlocks.length > 0
+                            ? [
+                                ...contextBlocks,
+                                {
+                                  role: "assistant",
+                                  content: [
+                                    {
+                                      type: "tool_use",
+                                      id: chunk.tool_use_id,
+                                      name: chunk.name,
+                                      input: streamingToolInput,
+                                    },
+                                  ],
+                                },
+                              ]
+                            : [
+                                {
+                                  role: "assistant",
+                                  content: [
+                                    {
+                                      type: "tool_use",
+                                      id: chunk.tool_use_id,
+                                      name: chunk.name,
+                                      input: streamingToolInput,
+                                    },
+                                  ],
+                                },
+                              ],
+                      }
+                    : msg,
+                ),
+              );
+
+              break;
+            case "new_context_message":
+              contextBlocks.push(chunk.message);
+              streamingText = ""; // Reset streaming text when we get new context
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMessage.id
+                    ? {
+                        ...msg,
+                        content: contextBlocks,
+                      }
+                    : msg,
+                ),
+              );
+              break;
+            case "response_complete":
+              // Save the assistant message to the database
+              await addMessage(chatId, contextBlocks, "assistant");
               break;
           }
         }
       } catch (error) {
         console.error("Error in handleAssistantResponse:", error);
         const errorId = crypto.randomUUID();
-        setErrors(prev => [...prev, {
-          id: errorId,
-          message: error instanceof Error ? error.message : "An error occurred during assistant response"
-        }]);
+        setErrors((prev) => [
+          ...prev,
+          {
+            id: errorId,
+            message:
+              error instanceof Error
+                ? error.message
+                : "An error occurred during assistant response",
+          },
+        ]);
       } finally {
         setIsStreaming(false);
       }
     },
-    [messages, modelTools]
+    [messages, modelTools],
   );
 
   // Handle sending messages
   const handleSendMessage = useCallback(
-    async (content: string, attachments?: { content: string; type: string }[]) => {
+    async (
+      content: string,
+      attachments?: { content: string; type: string }[],
+    ) => {
       setIsAutoFollowing(true);
       setShowScrollButton(false);
 
@@ -239,39 +336,59 @@ export function ChatView({
           onChatCreated(newChat);
 
           const contentBlocks: ContentBlockParam[] = [
-            { type: 'text', text: content }
+            { type: "text", text: content },
           ];
-          const message = await addMessage(newChat.id, [{ role: 'user', content: contentBlocks }], "user", attachments);
-          setMessages(prev => [...prev, message]);
+          const message = await addMessage(
+            newChat.id,
+            [{ role: "user", content: contentBlocks }],
+            "user",
+            attachments,
+          );
+          setMessages((prev) => [...prev, message]);
 
-          await handleAssistantResponse(newChat.id, content, attachments?.map(att => ({
-            ...att,
-            name: 'attachment',
-            size: att.content.length * 0.75
-          })));
+          await handleAssistantResponse(
+            newChat.id,
+            content,
+            attachments?.map((att) => ({
+              ...att,
+              name: "attachment",
+              size: att.content.length * 0.75,
+            })),
+          );
 
           const title = await getSummaryTitle(content);
           await updateChatTitle(newChat.id, title);
           onChatTitleUpdated(newChat.id, title);
         } else {
           const contentBlocks: ContentBlockParam[] = [
-            { type: 'text', text: content }
+            { type: "text", text: content },
           ];
-          const message = await addMessage(currentChatId, [{ role: 'user', content: contentBlocks }], "user", attachments);
-          setMessages(prev => [...prev, message]);
+          const message = await addMessage(
+            currentChatId,
+            [{ role: "user", content: contentBlocks }],
+            "user",
+            attachments,
+          );
+          setMessages((prev) => [...prev, message]);
 
-          const userMessages = messages.filter(m => m.content[0].role === 'user');
+          const userMessages = messages.filter(
+            (m) => m.content[0].role === "user",
+          );
           if (userMessages.length === 0) {
             const title = await getSummaryTitle(content);
             await updateChatTitle(currentChatId, title);
             onChatTitleUpdated(currentChatId, title);
           }
 
-          await handleAssistantResponse(currentChatId, content, attachments?.map(att => ({
-            ...att,
-            name: 'attachment',
-            size: att.content.length * 0.75
-          })));
+          await handleAssistantResponse(
+            currentChatId,
+            content,
+            attachments?.map((att) => ({
+              ...att,
+              name: "attachment",
+              size: att.content.length * 0.75,
+            })),
+          );
         }
       } catch (error: unknown) {
         console.error("Error in handleSendMessage:", error);
@@ -280,15 +397,22 @@ export function ChatView({
           setMessages(loadedMessages);
         }
 
-        const errorMessage = error instanceof Error ? error.message : "An error occurred";
+        const errorMessage =
+          error instanceof Error ? error.message : "An error occurred";
         const errorId = crypto.randomUUID();
-        setErrors(prev => [...prev, { id: errorId, message: errorMessage }]);
+        setErrors((prev) => [...prev, { id: errorId, message: errorMessage }]);
         setTimeout(() => {
-          setErrors(prev => prev.filter(e => e.id !== errorId));
+          setErrors((prev) => prev.filter((e) => e.id !== errorId));
         }, 5000);
       }
     },
-    [currentChatId, handleAssistantResponse, onChatCreated, onChatTitleUpdated, messages]
+    [
+      currentChatId,
+      handleAssistantResponse,
+      onChatCreated,
+      onChatTitleUpdated,
+      messages,
+    ],
   );
 
   const SCROLL_THRESHOLD_PX = 10;
@@ -341,7 +465,7 @@ export function ChatView({
   }, []);
 
   const handleDismissError = useCallback((errorId: string) => {
-    setErrors(prev => prev.filter(e => e.id !== errorId));
+    setErrors((prev) => prev.filter((e) => e.id !== errorId));
   }, []);
 
   // Use useEffect to bind drag events
@@ -429,48 +553,73 @@ export function ChatView({
   const messageList = useMemo(() => {
     return messages.map((message, index) => {
       const isLastMessage = index === messages.length - 1;
-      const isAssistantMessage = message.role === 'assistant';
-      const isStreaming = isLastMessage && isAssistantMessage && message.content[0].content === '...';
+      const isAssistantMessage = message.role === "assistant";
+      const isStreaming =
+        isLastMessage &&
+        isAssistantMessage &&
+        message.content[0].content === "...";
 
-      let displayContent = '';
-      
+      let displayContent = "";
+
       if (isStreaming) {
-        displayContent = '...';
-      } else if (message.content.length === 1 && typeof message.content[0].content === 'string') {
+        displayContent = "...";
+      } else if (
+        message.content.length === 1 &&
+        typeof message.content[0].content === "string"
+      ) {
         // Simple text content during streaming
         displayContent = message.content[0].content;
       } else if (Array.isArray(message.content[0].content)) {
         // Process content blocks (both during streaming and completed)
-        displayContent = message.content.map(param => {
-          if (typeof param.content === 'string') {
-            return param.content;
-          }
-          return param.content.map(block => {
-            if (block.type === 'text') {
-              return block.text;
-            } else if (block.type === 'tool_use') {
-              // Find if there's a corresponding result for this tool use
-              const toolResult = message.content
-                .flatMap(p => Array.isArray(p.content) ? p.content : [])
-                .find(b => 
-                  b.type === 'tool_result' && 
-                  b.tool_use_id === block.id
-                ) as { type: 'tool_result', content: string } | undefined;
-              
-              return `\n%%%tool_use_start%%%${JSON.stringify({
-                type: 'executing',
-                name: block.name,
-                args: block.input || {},
-                result: toolResult?.content,
-                status: toolResult ? 'complete' : 'running'
-              })}%%%tool_use_end%%%\n`;
-            } else if (block.type === 'tool_result') {
-              // Skip tool results as they're handled in the tool_use block
-              return '';
+        displayContent = message.content
+          .map((param) => {
+            if (typeof param.content === "string") {
+              return param.content;
             }
-            return '';
-          }).join('');
-        }).join('\n');
+            return param.content
+              .map((block) => {
+                if (block.type === "text") {
+                  return block.text;
+                } else if (block.type === "tool_use") {
+                  // Find if there's a corresponding result for this tool use
+                  const toolResult = message.content
+                    .flatMap((p) => (Array.isArray(p.content) ? p.content : []))
+                    .find(
+                      (b) =>
+                        b.type === "tool_result" && b.tool_use_id === block.id,
+                    ) as { type: "tool_result"; content: string } | undefined;
+
+                  // Try to parse and pretty print the result if it's JSON
+                  let formattedResult = toolResult?.content;
+                  if (formattedResult) {
+                    try {
+                      const parsed = JSON.parse(formattedResult);
+                      formattedResult = JSON.stringify(parsed, null, 2);
+                    } catch {
+                      // If it's not valid JSON, leave it as is
+                    }
+                  }
+
+                  return `\n%%%tool_use_start%%%${JSON.stringify(
+                    {
+                      type: "executing",
+                      name: block.name,
+                      args: block.input || {},
+                      result: formattedResult,
+                      status: toolResult ? "complete" : "running",
+                    },
+                    null,
+                    2,
+                  )}%%%tool_use_end%%%\n`;
+                } else if (block.type === "tool_result") {
+                  // Skip tool results as they're handled in the tool_use block
+                  return "";
+                }
+                return "";
+              })
+              .join("");
+          })
+          .join("\n");
       }
 
       return (

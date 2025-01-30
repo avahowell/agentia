@@ -20,6 +20,7 @@ function App() {
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false);
   const [hasOpenAiKey, setHasOpenAiKey] = useState(false);
+  const [hasExaKey, setHasExaKey] = useState(false);
 
   // Load chats on mount
   useEffect(() => {
@@ -39,9 +40,10 @@ function App() {
   useEffect(() => {
     const checkApiKeys = async () => {
       try {
-        const keys = await invoke<{ anthropic?: string; openai?: string }>('get_api_keys');
+        const keys = await invoke<{ anthropic?: string; openai?: string; exa?: string }>('get_api_keys');
         setHasAnthropicKey(!!keys.anthropic);
         setHasOpenAiKey(!!keys.openai);
+        setHasExaKey(!!keys.exa);
       } catch (error) {
         console.error('Failed to check API keys:', error);
       }
@@ -69,7 +71,7 @@ function App() {
     }
   };
 
-  const handleSaveSettings = async (anthropicKey: string, openAiKey: string) => {
+  const handleSaveSettings = async (anthropicKey: string, openAiKey: string, exaKey: string) => {
     try {
       if (anthropicKey) {
         await invoke('save_api_key', { keyType: 'anthropic', keyValue: anthropicKey });
@@ -79,6 +81,11 @@ function App() {
         await invoke('save_api_key', { keyType: 'openai', keyValue: openAiKey });
         setHasOpenAiKey(true);
       }
+      if (exaKey) {
+        await invoke('save_api_key', { keyType: 'exa', keyValue: exaKey });
+        setHasExaKey(true);
+      }
+      setShowSettings(false);
     } catch (error) {
       console.error('Failed to save API keys:', error);
     }
@@ -117,6 +124,7 @@ function App() {
             onSave={handleSaveSettings}
             hasAnthropicKey={hasAnthropicKey}
             hasOpenAiKey={hasOpenAiKey}
+            hasExaKey={hasExaKey}
           />
         );
       default:

@@ -7,7 +7,8 @@
   ],
   "permissions": [
     "core:default",
-    "opener:default",
+    "opener:allow-default-urls",
+    "opener:allow-open-url",
     "fs:default",
     {
       "identifier": "shell:allow-execute",
