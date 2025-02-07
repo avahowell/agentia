@@ -20,6 +20,7 @@
     "npm:react-markdown@^9.0.3": "9.0.3_@types+react@18.3.18_react@18.3.1",
     "npm:react@^18.3.1": "18.3.1",
     "npm:remark-gfm@4": "4.0.0",
+    "npm:three@0.173": "0.173.0",
     "npm:ts-jest@^29.2.5": "29.2.5_jest@29.7.0_typescript@5.6.3",
     "npm:typescript@~5.6.2": "5.6.3",
     "npm:vite@^6.0.3": "6.0.11_@types+node@22.12.0"
@@ -2851,6 +2852,9 @@
         "minimatch@3.1.2"
       ]
     },
+    "three@0.173.0": {
+      "integrity": "sha512-AUwVmViIEUgBwxJJ7stnF0NkPpZxx1aZ6WiAbQ/Qq61h6I9UR4grXtZDmO8mnlaNORhHnIBlXJ1uBxILEKuVyw=="
+    },
     "tmpl@1.0.5": {
       "integrity": "sha512-3f0uOEAQwIqGuWW2MVzYg8fV/QNnc/IpuJNG837rLuczAaLVHslWHZQj4IGiEl5Hs3kkbhwL9Ab7Hrsmuj+Smw=="
     },
@@ -3130,6 +3134,7 @@
         "npm:react-markdown@^9.0.3",
         "npm:react@^18.3.1",
         "npm:remark-gfm@4",
+        "npm:three@0.173",
         "npm:ts-jest@^29.2.5",
         "npm:typescript@~5.6.2",
         "npm:vite@^6.0.3"

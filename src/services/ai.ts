@@ -114,216 +114,266 @@ export async function* streamAssistantResponse(
     args: Record<string, unknown>,
   ) => Promise<CallToolResult>,
 ): AsyncGenerator<StreamOutput> {
+  // Ensure necessary API key is available.
   const keys = await getApiKeys();
   if (!keys.anthropic) {
     throw new Error("Anthropic API key not found. Please add it in settings.");
   }
-
   const anthropic = new Anthropic({
     apiKey: keys.anthropic,
     dangerouslyAllowBrowser: true,
   });
+  const initialMessages = formatMessages(messages, userMessage, images);
 
-  let currentMessages = formatMessages(messages, userMessage, images);
-  console.log("📨 context:", currentMessages);
+  // Define the immutable state used in processing.
+  const initialState = {
+    currentMessages: initialMessages,
+    currentToolName: "",
+    currentToolInputString: "",
+    currentToolUseId: "",
+    assistantResponse: "",
+    needsMoreInference: false,
+  };
 
-  let currentToolName = "";
-  let currentToolInputString = "";
-  let currentToolUseId = "";
-  let assistantResponse = "";
-  let needsMoreInference = true;
+  // Helper: Process a single chunk into new state and output events.
+  const processChunk = (
+    state: typeof initialState,
+    chunk: MessageStreamEvent,
+  ): { newState: typeof initialState; outputs: StreamOutput[] } => {
+    let outputs: StreamOutput[] = [];
+    let newState = { ...state };
 
-  while (needsMoreInference) {
-    needsMoreInference = false;
+    switch (chunk.type) {
+      case "message_start":
+        // No state change for message_start.
+        break;
+      case "content_block_start":
+        if (chunk.content_block.type === "tool_use") {
+          newState = {
+            ...newState,
+            currentToolUseId: chunk.content_block.id,
+            currentToolName: chunk.content_block.name,
+          };
+          outputs.push({
+            type: "tool_call_start",
+            name: chunk.content_block.name,
+            tool_use_id: chunk.content_block.id,
+          });
+        }
+        break;
+      case "content_block_delta":
+        if (chunk.delta.type === "text_delta") {
+          newState = {
+            ...newState,
+            assistantResponse: newState.assistantResponse + chunk.delta.text,
+          };
+          outputs.push({ type: "text_chunk", content: chunk.delta.text });
+        } else if (chunk.delta.type === "input_json_delta") {
+          newState = {
+            ...newState,
+            currentToolInputString:
+              newState.currentToolInputString + chunk.delta.partial_json,
+          };
+          outputs.push({
+            type: "tool_call_update",
+            name: newState.currentToolName,
+            tool_use_id: newState.currentToolUseId,
+            partialInput: chunk.delta.partial_json,
+          });
+        }
+        break;
+      case "content_block_stop":
+        if (newState.currentToolUseId === "") {
+          // Finalize accumulated text by appending a new assistant message.
+          const textMessage: MessageParam = {
+            role: "assistant",
+            content: [{ type: "text", text: newState.assistantResponse }],
+          };
+          newState = {
+            ...newState,
+            currentMessages: [...newState.currentMessages, textMessage],
+            assistantResponse: "",
+          };
+          outputs.push({ type: "new_context_message", message: textMessage });
+        }
+        break;
+      case "message_delta":
+        if (chunk.delta.stop_reason === "tool_use") {
+          // Prepare a tool call message.
+          const toolInput =
+            newState.currentToolInputString === ""
+              ? {}
+              : JSON.parse(newState.currentToolInputString);
+          const toolMessage: MessageParam = {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_use",
+                id: newState.currentToolUseId,
+                name: newState.currentToolName,
+                input: toolInput,
+              },
+            ],
+          };
+          newState = {
+            ...newState,
+            currentMessages: [...newState.currentMessages, toolMessage],
+          };
+          outputs.push({ type: "new_context_message", message: toolMessage });
+          // Signal that a tool call should be executed.
+          newState = { ...newState, needsMoreInference: true };
+        }
+        break;
+      default:
+        break;
+    }
+    return { newState, outputs };
+  };
 
+  // Helper: Execute the tool call and update state accordingly.
+  const processToolCall = async (
+    state: typeof initialState,
+  ): Promise<{ newState: typeof initialState; outputs: StreamOutput[] }> => {
+    let outputs: StreamOutput[] = [];
+    const toolInput =
+      state.currentToolInputString === ""
+        ? {}
+        : JSON.parse(state.currentToolInputString);
+    try {
+      if (!executeToolFn) throw new Error("No tool executor provided");
+      const result = await executeToolFn(state.currentToolName, toolInput);
+      const resultString = JSON.stringify(result);
+      outputs.push({
+        type: "tool_result",
+        name: state.currentToolName,
+        tool_use_id: state.currentToolUseId,
+        args: toolInput,
+        result: resultString,
+      });
+      const resultContent = result.content.map((c: any) => {
+        switch (c.type) {
+          case "text":
+            return { type: "text", text: c.text } as TextBlockParam;
+          case "image":
+            return {
+              type: "image",
+              source: {
+                data: c.data,
+                media_type: c.mimeType,
+                type: "base64",
+              },
+            } as ImageBlockParam;
+          default:
+            return { type: "text", text: "" } as TextBlockParam;
+        }
+      });
+      const resultMessage: MessageParam = {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: state.currentToolUseId,
+            content: resultContent,
+            is_error: result.isError,
+          },
+        ],
+      };
+      const newMessages = [...state.currentMessages, resultMessage];
+      outputs.push({ type: "new_context_message", message: resultMessage });
+      return {
+        newState: {
+          ...state,
+          currentMessages: newMessages,
+          currentToolName: "",
+          currentToolInputString: "",
+          currentToolUseId: "",
+        },
+        outputs,
+      };
+    } catch (e: any) {
+      outputs.push({
+        type: "tool_error",
+        name: state.currentToolName,
+        tool_use_id: state.currentToolUseId,
+        args: toolInput,
+        error: e.message,
+      });
+      const errorMessage: MessageParam = {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: state.currentToolUseId,
+            content: e.message,
+          },
+        ],
+      };
+      const newMessages = [...state.currentMessages, errorMessage];
+      outputs.push({ type: "new_context_message", message: errorMessage });
+      return {
+        newState: {
+          ...state,
+          currentMessages: newMessages,
+          currentToolName: "",
+          currentToolInputString: "",
+          currentToolUseId: "",
+        },
+        outputs,
+      };
+    }
+  };
+
+  // Recursive function to process the response stream.
+  async function* processStream(
+    state: typeof initialState,
+  ): AsyncGenerator<StreamOutput> {
     const stream = await anthropic.messages.create({
-      messages: currentMessages,
+      messages: state.currentMessages,
       model: "claude-3-5-sonnet-latest",
       max_tokens: 4096,
       stream: true,
       tools: tools || [],
     });
-
-    for await (const chunk of stream as AsyncIterable<MessageStreamEvent>) {
-      switch (chunk.type) {
-        case "message_start": {
-          break;
+    let currentState = state;
+    for await (const chunk of stream) {
+      // For "tool_use" message_delta chunks, execute the tool call.
+      if (
+        chunk.type === "message_delta" &&
+        chunk.delta.stop_reason === "tool_use"
+      ) {
+        const { newState, outputs } = processChunk(currentState, chunk);
+        for (const out of outputs) {
+          yield out;
         }
-        case "content_block_start": {
-          if (chunk.content_block.type === "tool_use") {
-            currentToolUseId = chunk.content_block.id;
-            currentToolName = chunk.content_block.name;
-            yield {
-              type: "tool_call_start",
-              name: chunk.content_block.name,
-              tool_use_id: chunk.content_block.id,
-            } as const;
-          }
-          break;
+        const toolCallResult = await processToolCall(newState);
+        for (const out of toolCallResult.outputs) {
+          yield out;
         }
-        case "content_block_delta": {
-          if (chunk.delta.type === "text_delta") {
-            yield {
-              type: "text_chunk",
-              content: chunk.delta.text,
-            } as const;
-            assistantResponse += chunk.delta.text;
-          } else if (chunk.delta.type === "input_json_delta") {
-            currentToolInputString += chunk.delta.partial_json;
-            yield {
-              type: "tool_call_update",
-              name: currentToolName,
-              tool_use_id: currentToolUseId,
-              partialInput: chunk.delta.partial_json,
-            } as const;
-          }
-          break;
+        currentState = toolCallResult.newState;
+      } else {
+        const { newState, outputs } = processChunk(currentState, chunk);
+        for (const out of outputs) {
+          yield out;
         }
-        case "content_block_stop": {
-          if (currentToolUseId === "") {
-            currentMessages.push({
-              role: "assistant",
-              content: [
-                {
-                  type: "text",
-                  text: assistantResponse,
-                },
-              ],
-            });
-            yield {
-              type: "new_context_message",
-              message: currentMessages.slice(-1)[0],
-            } as const;
-            assistantResponse = "";
-          }
-          break;
-        }
-        case "message_stop": {
-          break;
-        }
-        case "message_delta": {
-          if (chunk.delta.stop_reason == "tool_use") {
-            currentMessages.push({
-              role: "assistant",
-              content: [
-                {
-                  type: "tool_use",
-                  id: currentToolUseId,
-                  name: currentToolName,
-                  // handle the case where the input is empty
-                  input:
-                    currentToolInputString === ""
-                      ? {}
-                      : JSON.parse(currentToolInputString),
-                },
-              ],
-            });
-            yield {
-              type: "new_context_message",
-              message: currentMessages.slice(-1)[0],
-            } as const;
-            assistantResponse = "";
-            // execute tool call
-            try {
-              if (!executeToolFn) {
-                throw new Error("No tool executor provided");
-              }
-              const result = await executeToolFn?.(
-                currentToolName,
-                currentToolInputString === ""
-                  ? {}
-                  : JSON.parse(currentToolInputString),
-              );
-              let result_content = result.content.map((content) => {
-                switch (content.type) {
-                  case "text":
-                    return {
-                      type: "text",
-                      text: content.text,
-                    } as TextBlockParam;
-                    break;
-                  case "image":
-                    return {
-                      type: "image",
-                      source: {
-                        data: content.data,
-                        media_type: content.mimeType,
-                        type: "base64",
-                      },
-                    } as ImageBlockParam;
-                    break;
-                }
-                return { type: "text", text: "" } as TextBlockParam;
-              });
-
-              const result_stringified = JSON.stringify(result);
-              yield {
-                type: "tool_result",
-                name: currentToolName,
-                tool_use_id: currentToolUseId,
-                args:
-                  currentToolInputString === ""
-                    ? {}
-                    : JSON.parse(currentToolInputString),
-                result: result_stringified,
-              };
-              currentMessages.push({
-                role: "user",
-                content: [
-                  {
-                    type: "tool_result",
-                    tool_use_id: currentToolUseId,
-                    content: result_content,
-                    is_error: result.isError,
-                  } as const satisfies ToolResultBlockParam,
-                ],
-              });
-              yield {
-                type: "new_context_message",
-                message: currentMessages.slice(-1)[0],
-              } as const;
-            } catch (e: any) {
-              yield {
-                type: "tool_error",
-                name: currentToolName,
-                tool_use_id: currentToolUseId,
-                args:
-                  currentToolInputString === ""
-                    ? {}
-                    : JSON.parse(currentToolInputString),
-                error: e.message,
-              };
-              currentMessages.push({
-                role: "user",
-                content: [
-                  {
-                    type: "tool_result",
-                    tool_use_id: currentToolUseId,
-                    content: e.message,
-                  } as const satisfies ToolResultBlockParam,
-                ],
-              });
-              yield {
-                type: "new_context_message",
-                // get the last message added to currentMessages
-                message: currentMessages.slice(-1)[0],
-              } as const;
-            }
-            currentToolInputString = "";
-            currentToolName = "";
-            currentToolUseId = "";
-
-            needsMoreInference = true;
-          }
-          break;
-        }
+        currentState = newState;
       }
     }
+    if (currentState.needsMoreInference) {
+      // Reset flag and recursively process the next round.
+      currentState = { ...currentState, needsMoreInference: false };
+      yield* processStream(currentState);
+    } else {
+      return currentState;
+    }
   }
+
+  // Start the recursive stream processing.
+  yield* processStream(initialState);
+  // Finalize by yielding the complete message context.
   yield {
     type: "response_complete",
-    new_context: currentMessages,
-  } as const;
+    new_context: initialState.currentMessages,
+  };
 }
 
 export async function getSummaryTitle(content: string): Promise<string> {

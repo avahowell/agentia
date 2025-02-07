@@ -50,6 +50,7 @@ export function ChatView({
   // State management
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [cancelStreaming, setCancelStreaming] = useState(false);
   const [errors, setErrors] = useState<ErrorItem[]>([]);
   const [isAutoFollowing, setIsAutoFollowing] = useState(true);
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -166,6 +167,10 @@ export function ChatView({
             return await modelTools.executeTool(name, args);
           },
         )) {
+          if (cancelStreaming) {
+            console.log("Inference cancelled by user.");
+            break;
+          }
           switch (chunk.type) {
             case "text_chunk":
               streamingText += chunk.content;
@@ -316,9 +321,10 @@ export function ChatView({
         ]);
       } finally {
         setIsStreaming(false);
+        setCancelStreaming(false);
       }
     },
-    [messages, modelTools],
+    [messages, modelTools, cancelStreaming],
   );
 
   // Handle sending messages
@@ -699,7 +705,12 @@ export function ChatView({
         )}
       </div>
 
-      <ChatInput ref={chatInputRef} onSendMessage={handleSendMessage} />
+      <ChatInput
+        ref={chatInputRef}
+        onSendMessage={handleSendMessage}
+        isStreaming={isStreaming}
+        onStopInference={() => setCancelStreaming(true)}
+      />
     </div>
   );
 }

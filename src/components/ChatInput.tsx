@@ -4,13 +4,20 @@ import { ModelSelect } from './ModelSelect';
 interface ChatInputProps {
   onSendMessage: (message: string, attachments?: { content: string; type: string }[]) => void;
   onModelChange?: (model: string) => void;
+  isStreaming?: boolean;
+  onStopInference?: () => void;
 }
 
 export interface ChatInputHandle {
   addFiles: (files: File[]) => Promise<void>;
 }
 
-export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(({ onSendMessage, onModelChange }, ref) => {
+export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(({
+  onSendMessage,
+  onModelChange,
+  isStreaming = false,
+  onStopInference
+}, ref) => {
   const [inputValue, setInputValue] = useState('');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [processedFiles, setProcessedFiles] = useState<{ content: string; type: string }[]>([]);
@@ -122,7 +129,7 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(({ onSendMe
           ))}
         </div>
       )}
-      <div className="message-input-group">
+      <div className="message-input-group" style={{ position: 'relative' }}>
         <ModelSelect onModelChange={onModelChange} />
         <textarea
           className="message-input"
